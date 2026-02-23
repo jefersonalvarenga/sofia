@@ -57,76 +57,50 @@
     },
     {
       "parameters": {
-        "operation": "upsert",
-        "schema": {
-          "__rl": true,
-          "value": "public",
-          "mode": "name"
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/customers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "resolution=merge-duplicates" }
+          ]
         },
-        "table": {
-          "__rl": true,
-          "value": "customers",
-          "mode": "name"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "phone": "={{ $json.phone }}",
-            "push_name": "={{ $json.pushName }}"
-          }
-        },
-        "options": {
-          "conflictTarget": "phone,clinic_id"
-        }
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.phone, push_name: $json.pushName }) }}",
+        "options": { "timeout": 10000 }
       },
       "id": "upsert-customer",
       "name": "Upsert Customer",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [920, 300],
-      "credentials": {
-        "supabaseApi": {
-          "id": "supabase-easyscale",
-          "name": "Supabase account"
-        }
-      }
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "operation": "getAll",
-        "schema": {
-          "__rl": true,
-          "value": "public",
-          "mode": "name"
-        },
-        "table": {
-          "__rl": true,
-          "value": "Instance",
-          "mode": "name"
-        },
-        "filters": {
-          "conditions": [
-            {
-              "keyName": "name",
-              "keyValue": "={{ $('Parse Evolution Payload').first().json.instanceName }}"
-            }
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/Instance?name=eq.{{ $('Parse Evolution Payload').first().json.instanceName }}&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" }
           ]
         },
         "options": {
-          "limit": 1
+          "timeout": 10000,
+          "response": { "response": { "responseFormat": "json" } }
         }
       },
       "id": "buscar-config-clinica",
       "name": "Buscar Config Clínica",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [920, 480],
-      "credentials": {
-        "supabaseApi": {
-          "id": "supabase-easyscale",
-          "name": "Supabase account"
-        }
-      },
       "onError": "continueRegularOutput"
     },
     {
@@ -283,44 +257,27 @@
     },
     {
       "parameters": {
-        "operation": "update",
-        "schema": {
-          "__rl": true,
-          "value": "public",
-          "mode": "name"
-        },
-        "table": {
-          "__rl": true,
-          "value": "active_chats",
-          "mode": "name"
-        },
-        "filters": {
-          "conditions": [
-            {
-              "keyName": "remote_jid",
-              "keyValue": "={{ $('Parse Evolution Payload').first().json.remoteJid }}"
-            }
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/active_chats?remote_jid=eq.{{ $('Parse Evolution Payload').first().json.remoteJid }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
           ]
         },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "is_paused": true,
-            "paused_reason": "human_escalation"
-          }
-        }
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"is_paused\": true, \"paused_reason\": \"human_escalation\"}",
+        "options": { "timeout": 10000 }
       },
       "id": "pausar-sofia",
       "name": "Pausar Sofia",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [2240, 380],
-      "credentials": {
-        "supabaseApi": {
-          "id": "supabase-easyscale",
-          "name": "Supabase account"
-        }
-      },
       "onError": "continueRegularOutput"
     },
     {
