@@ -1,5 +1,6 @@
 {
   "name": "Sofia - Inbound WhatsApp (Evolution API)",
+
   "nodes": [
     {
       "parameters": {
