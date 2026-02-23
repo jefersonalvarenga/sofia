@@ -57,50 +57,40 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.SUPABASE_URL }}/rest/v1/customers",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
-            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" },
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Prefer", "value": "resolution=merge-duplicates" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ phone: $json.phone, push_name: $json.pushName }) }}",
-        "options": { "timeout": 10000 }
+        "operation": "executeQuery",
+        "query": "=INSERT INTO public.customers (phone, push_name)\nVALUES ('{{ $json.phone }}', '{{ $json.pushName }}')\nON CONFLICT (phone) DO UPDATE SET push_name = EXCLUDED.push_name, updated_at = NOW()",
+        "options": {}
       },
       "id": "upsert-customer",
       "name": "Upsert Customer",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
       "position": [920, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-account",
+          "name": "Postgres account"
+        }
+      },
       "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "={{ $env.SUPABASE_URL }}/rest/v1/Instance?name=eq.{{ $('Parse Evolution Payload').first().json.instanceName }}&limit=1",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
-            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" }
-          ]
-        },
-        "options": {
-          "timeout": 10000,
-          "response": { "response": { "responseFormat": "json" } }
-        }
+        "operation": "executeQuery",
+        "query": "=SELECT \"clinicId\" FROM public.\"Instance\" WHERE name = '{{ $json.instanceName }}' LIMIT 1",
+        "options": {}
       },
       "id": "buscar-config-clinica",
       "name": "Buscar Config Clínica",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
       "position": [920, 480],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-account",
+          "name": "Postgres account"
+        }
+      },
       "onError": "continueRegularOutput"
     },
     {
@@ -257,27 +247,21 @@
     },
     {
       "parameters": {
-        "method": "PATCH",
-        "url": "={{ $env.SUPABASE_URL }}/rest/v1/active_chats?remote_jid=eq.{{ $('Parse Evolution Payload').first().json.remoteJid }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
-            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" },
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Prefer", "value": "return=minimal" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\"is_paused\": true, \"paused_reason\": \"human_escalation\"}",
-        "options": { "timeout": 10000 }
+        "operation": "executeQuery",
+        "query": "=UPDATE public.active_chats SET is_paused = true, paused_reason = 'human_escalation' WHERE remote_jid = '{{ $('Parse Evolution Payload').first().json.remoteJid }}'",
+        "options": {}
       },
       "id": "pausar-sofia",
       "name": "Pausar Sofia",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
       "position": [2240, 380],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-account",
+          "name": "Postgres account"
+        }
+      },
       "onError": "continueRegularOutput"
     },
     {
