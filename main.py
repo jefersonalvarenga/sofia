@@ -2,6 +2,7 @@
 Sofia — EasyScale Patient Conversational Agent
 POST /v1/sofia  — main conversational endpoint
 GET  /v1/health — health check
+v1.0.0
 """
 
 import time
