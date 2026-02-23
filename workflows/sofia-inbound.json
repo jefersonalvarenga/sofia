@@ -1,0 +1,406 @@
+{
+  "name": "Sofia - Inbound WhatsApp (Evolution API)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sofia-inbound",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-evolution",
+      "name": "Webhook - Evolution Inbound",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "sofia-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Parse Evolution API inbound message\n// Filters: own messages, groups, unsupported types\n// ============================================\n\nconst body = $input.first().json.body || $input.first().json;\n\n// Evolution API sends messages.upsert events\nconst messages = body.data?.messages || body.messages || [];\nconst message = messages[0] || body.data || body;\n\nconst key = message.key || {};\nconst remoteJid = key.remoteJid || message.remoteJid || '';\nconst fromMe = key.fromMe || false;\nconst wamid = key.id || message.id || '';\nconst pushName = message.pushName || '';\nconst instanceName = body.instance || body.instanceName || '';\n\n// Ignore own messages\nif (fromMe) {\n  return [{ json: { ignore: true, reason: 'from_me' } }];\n}\n\n// Ignore group messages\nif (remoteJid.includes('@g.us')) {\n  return [{ json: { ignore: true, reason: 'group_message' } }];\n}\n\n// Ignore status broadcasts\nif (remoteJid === 'status@broadcast') {\n  return [{ json: { ignore: true, reason: 'status_broadcast' } }];\n}\n\n// Extract message content\nconst msgContent = message.message || {};\nlet messageContent = '';\nlet messageType = 'unsupported';\n\nif (msgContent.conversation) {\n  messageContent = msgContent.conversation;\n  messageType = 'text';\n} else if (msgContent.extendedTextMessage?.text) {\n  messageContent = msgContent.extendedTextMessage.text;\n  messageType = 'text';\n} else if (msgContent.imageMessage?.caption) {\n  messageContent = msgContent.imageMessage.caption;\n  messageType = 'image';\n} else if (msgContent.audioMessage) {\n  messageContent = '[Áudio]';\n  messageType = 'audio';\n} else if (msgContent.documentMessage?.caption) {\n  messageContent = msgContent.documentMessage.caption;\n  messageType = 'document';\n}\n\n// Ignore unsupported message types without text content\nif (!messageContent) {\n  return [{ json: { ignore: true, reason: 'no_text_content', messageType } }];\n}\n\nreturn [{\n  json: {\n    ignore: false,\n    remoteJid,\n    pushName,\n    wamid,\n    messageContent,\n    messageType,\n    instanceName,\n    phone: remoteJid.split('@')[0]\n  }\n}];"
+      },
+      "id": "parse-evolution-payload",
+      "name": "Parse Evolution Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-valid-msg",
+              "leftValue": "={{ $json.ignore }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-valid-message",
+      "name": "Filtrar Mensagem Válida",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "value": "public"
+        },
+        "table": {
+          "value": "customers"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "phone": "={{ $json.phone }}",
+            "push_name": "={{ $json.pushName }}"
+          }
+        },
+        "options": {
+          "conflictTarget": "phone,clinic_id"
+        }
+      },
+      "id": "upsert-customer",
+      "name": "Upsert Customer",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [920, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-easyscale",
+          "name": "Supabase EasyScale"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "schema": {
+          "value": "public"
+        },
+        "table": {
+          "value": "Instance"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "name",
+              "keyValue": "={{ $('Parse Evolution Payload').first().json.instanceName }}"
+            }
+          ]
+        },
+        "options": {
+          "limit": 1
+        }
+      },
+      "id": "buscar-config-clinica",
+      "name": "Buscar Config Clínica",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [920, 480],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-easyscale",
+          "name": "Supabase EasyScale"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Generate available slots for scheduling\n// 3 próximos dias úteis, horários 9h-17h, de hora em hora\n// Filtra slots já ocupados\n// Retorna os 3 primeiros disponíveis\n// ============================================\n\nconst msgData = $('Parse Evolution Payload').first().json;\nconst clinicData = $('Buscar Config Clínica').first().json;\n\nconst clinicId = clinicData?.clinic_id || clinicData?.clinicId || null;\n\n// Generate candidate slots: next 3 business days, 9-17h\nconst slots = [];\nconst now = new Date();\nlet daysAdded = 0;\nlet checkDate = new Date(now);\ncheckDate.setDate(checkDate.getDate() + 1); // Start from tomorrow\n\nwhile (daysAdded < 3) {\n  const dow = checkDate.getDay();\n  // Skip weekends\n  if (dow !== 0 && dow !== 6) {\n    for (let h = 9; h <= 17; h++) {\n      const slot = new Date(checkDate);\n      slot.setHours(h, 0, 0, 0);\n      const y = slot.getFullYear();\n      const m = String(slot.getMonth() + 1).padStart(2, '0');\n      const d = String(slot.getDate()).padStart(2, '0');\n      const hh = String(slot.getHours()).padStart(2, '0');\n      slots.push(`${y}-${m}-${d} ${hh}:00`);\n    }\n    daysAdded++;\n  }\n  checkDate.setDate(checkDate.getDate() + 1);\n}\n\n// Return first 3 available slots (no appointment filtering in this version)\nconst availableSlots = slots.slice(0, 3);\n\nreturn [{\n  json: {\n    ...msgData,\n    clinicId,\n    availableSlots\n  }\n}];"
+      },
+      "id": "gerar-slots",
+      "name": "Buscar Slots Disponíveis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sofia.easyscale.co/v1/sofia",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.SOFIA_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  instance_id: $json.instanceName,\n  clinic_id: $json.clinicId || 'unknown',\n  remote_jid: $json.remoteJid,\n  push_name: $json.pushName,\n  message: $json.messageContent,\n  message_type: $json.messageType,\n  wamid: $json.wamid,\n  available_slots: $json.availableSlots || []\n}) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        },
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 2000
+      },
+      "id": "chamar-sofia-api",
+      "name": "Chamar Sofia API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Sofia API response\nconst response = $input.first().json;\nconst body = response.body || response;\n\nreturn [{\n  json: {\n    responseMessage: body.response_message || '',\n    shouldSend: body.should_send !== false,\n    agentName: body.agent_name || 'Sofia',\n    conversationStage: body.conversation_stage || 'active',\n    sessionId: body.session_id || '',\n    requiresHuman: body.requires_human === true,\n    appointmentCreated: body.appointment_created || null,\n    processingTimeMs: body.processing_time_ms || 0\n  }\n}];"
+      },
+      "id": "processa-resposta-sofia",
+      "name": "Processa Resposta Sofia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1580, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-should-send",
+              "leftValue": "={{ $json.shouldSend }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "verificar-should-send",
+      "name": "Verificar should_send",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1800, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $('Parse Evolution Payload').first().json.instanceName }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  number: $('Parse Evolution Payload').first().json.remoteJid,\n  text: $('Processa Resposta Sofia').first().json.responseMessage\n}) }}",
+        "options": {
+          "timeout": 15000
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 3000
+      },
+      "id": "enviar-resposta",
+      "name": "Enviar Resposta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2020, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-requires-human",
+              "leftValue": "={{ $('Processa Resposta Sofia').first().json.requiresHuman }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "verificar-requires-human",
+      "name": "Verificar requires_human",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2020, 420]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "value": "public"
+        },
+        "table": {
+          "value": "active_chats"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "remote_jid",
+              "keyValue": "={{ $('Parse Evolution Payload').first().json.remoteJid }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "is_paused": true,
+            "paused_reason": "human_escalation"
+          }
+        }
+      },
+      "id": "pausar-sofia",
+      "name": "Pausar Sofia",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2240, 380],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-easyscale",
+          "name": "Supabase EasyScale"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ok', processed: true, agent: $('Processa Resposta Sofia').first().json.agentName }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-ok",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2460, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ok', processed: false, reason: $json.reason || 'ignored' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-ignorada",
+      "name": "Respond - Ignorada",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [700, 500]
+    }
+  ],
+  "connections": {
+    "Webhook - Evolution Inbound": {
+      "main": [[{ "node": "Parse Evolution Payload", "type": "main", "index": 0 }]]
+    },
+    "Parse Evolution Payload": {
+      "main": [[{ "node": "Filtrar Mensagem Válida", "type": "main", "index": 0 }]]
+    },
+    "Filtrar Mensagem Válida": {
+      "main": [
+        [
+          { "node": "Upsert Customer", "type": "main", "index": 0 },
+          { "node": "Buscar Config Clínica", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Respond - Ignorada", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Customer": {
+      "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
+    },
+    "Buscar Config Clínica": {
+      "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
+    },
+    "Buscar Slots Disponíveis": {
+      "main": [[{ "node": "Chamar Sofia API", "type": "main", "index": 0 }]]
+    },
+    "Chamar Sofia API": {
+      "main": [[{ "node": "Processa Resposta Sofia", "type": "main", "index": 0 }]]
+    },
+    "Processa Resposta Sofia": {
+      "main": [[
+        { "node": "Verificar should_send", "type": "main", "index": 0 },
+        { "node": "Verificar requires_human", "type": "main", "index": 0 }
+      ]]
+    },
+    "Verificar should_send": {
+      "main": [
+        [{ "node": "Enviar Resposta", "type": "main", "index": 0 }],
+        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }]
+      ]
+    },
+    "Verificar requires_human": {
+      "main": [
+        [{ "node": "Pausar Sofia", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Enviar Resposta": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Pausar Sofia": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "executionTimeout": 180,
+    "timezone": "America/Sao_Paulo"
+  },
+  "tags": [
+    { "name": "Sofia", "id": "10" },
+    { "name": "WhatsApp", "id": "11" }
+  ]
+}

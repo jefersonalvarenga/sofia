@@ -1,0 +1,391 @@
+{
+  "name": "GitOps - Deploy Workflows from GitHub",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gitops-deploy",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-github",
+      "name": "Webhook - GitHub Push",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "gitops-deploy"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Valida e parseia o webhook do GitHub (push event)\n// ============================================\n\nconst body = $input.first().json.body;\nconst headers = $input.first().json.headers;\n\nconst githubEvent = headers['x-github-event'];\n\nif (githubEvent !== 'push') {\n  return [{ json: { ignore: true, reason: 'not_push_event', event: githubEvent } }];\n}\n\nconst commits = body.commits || [];\nconst ref = body.ref || '';\n\nif (ref !== 'refs/heads/main') {\n  return [{ json: { ignore: true, reason: 'not_main_branch', ref } }];\n}\n\nconst workflowFiles = new Set();\n\nfor (const commit of commits) {\n  const allFiles = [\n    ...(commit.added || []),\n    ...(commit.modified || [])\n  ];\n  \n  for (const file of allFiles) {\n    if (file.startsWith('workflows/') && file.endsWith('.json')) {\n      if (!file.includes('gitops-deployer')) {\n        workflowFiles.add(file);\n      }\n    }\n  }\n}\n\nif (workflowFiles.size === 0) {\n  return [{ json: { ignore: true, reason: 'no_workflow_changes' } }];\n}\n\nconst repoFullName = body.repository?.full_name || '';\n\nreturn Array.from(workflowFiles).map(filePath => ({\n  json: {\n    ignore: false,\n    filePath,\n    fileName: filePath.split('/').pop().replace('.json', ''),\n    repoFullName,\n    branch: 'main',\n    rawUrl: `https://raw.githubusercontent.com/${repoFullName}/main/${filePath}`,\n    pusher: body.pusher?.name || 'unknown',\n    commitMessage: commits[commits.length - 1]?.message || ''\n  }\n}));"
+      },
+      "id": "parse-github-webhook",
+      "name": "Parse GitHub Push",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-not-ignored",
+              "leftValue": "={{ $json.ignore }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-valid-push",
+      "name": "Tem Workflow Alterado?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.rawUrl }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "download-workflow-json",
+      "name": "Download Workflow JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [930, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const workflowData = $input.first().json;\nconst workflowName = workflowData.name;\n\nreturn [{\n  json: {\n    workflowName,\n    workflowData,\n    filePath: $('Tem Workflow Alterado?').first().json.filePath,\n    pusher: $('Tem Workflow Alterado?').first().json.pusher,\n    commitMessage: $('Tem Workflow Alterado?').first().json.commitMessage\n  }\n}];"
+      },
+      "id": "prepare-workflow-data",
+      "name": "Prepara Dados do Workflow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1150, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://n8n.easyscale.co/api/v1/workflows",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $env.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "250"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "list-existing-workflows",
+      "name": "n8n API - Lista Workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1370, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Estratégia:\n//   UPDATE: deactivate → PUT → activate (força publish)\n//   CREATE: POST → activate\n// ============================================\n\nconst prepData = $('Prepara Dados do Workflow').first().json;\nconst workflowName = prepData.workflowName;\nconst workflowData = prepData.workflowData;\n\nconst apiResponse = $input.first().json;\nconst existingWorkflows = apiResponse.data || apiResponse || [];\n\nlet existingId = null;\nconst workflows = Array.isArray(existingWorkflows) ? existingWorkflows : [];\n\nfor (const wf of workflows) {\n  if (wf.name === workflowName) {\n    existingId = wf.id;\n    break;\n  }\n}\n\nconst cleanWorkflow = { ...workflowData };\ndelete cleanWorkflow.id;\ndelete cleanWorkflow.createdAt;\ndelete cleanWorkflow.updatedAt;\ndelete cleanWorkflow.active;\ndelete cleanWorkflow.versionId;\ndelete cleanWorkflow.tags;\ndelete cleanWorkflow.staticData;\ndelete cleanWorkflow.meta;\ndelete cleanWorkflow.pinData;\n\nreturn [{\n  json: {\n    action: existingId ? 'update' : 'create',\n    existingId,\n    workflowName,\n    workflowPayload: cleanWorkflow,\n    filePath: prepData.filePath,\n    pusher: prepData.pusher,\n    commitMessage: prepData.commitMessage\n  }\n}];"
+      },
+      "id": "decide-action",
+      "name": "Prepara Deploy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-is-update",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "update",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-action",
+      "name": "É Update?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1830, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://n8n.easyscale.co/api/v1/workflows/{{ $json.existingId }}/deactivate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $env.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "api-deactivate-workflow",
+      "name": "n8n API - Deactivate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2060, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recupera contexto após deactivate\nconst context = $('Prepara Deploy').first().json;\nreturn [{ json: context }];"
+      },
+      "id": "restore-after-deactivate",
+      "name": "Restaura Contexto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2280, 200]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://n8n.easyscale.co/api/v1/workflows/{{ $json.existingId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $env.N8N_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.workflowPayload) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "api-update-workflow",
+      "name": "n8n API - Update Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2500, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://n8n.easyscale.co/api/v1/workflows",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $env.N8N_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.workflowPayload) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "api-create-workflow",
+      "name": "n8n API - Create Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2500, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrai o ID do workflow criado/atualizado\nconst response = $input.first().json;\nconst context = $('Prepara Deploy').first().json;\n\nconst workflowId = response.id || context.existingId || 'unknown';\n\nreturn [{\n  json: {\n    action: context.action,\n    workflowName: context.workflowName,\n    workflowId: String(workflowId),\n    filePath: context.filePath,\n    pusher: context.pusher,\n    commitMessage: context.commitMessage,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "format-result",
+      "name": "Resultado do Deploy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2720, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://n8n.easyscale.co/api/v1/workflows/{{ $json.workflowId }}/activate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $env.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "activate-workflow",
+      "name": "n8n API - Activate Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2940, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'deployed_and_published', workflow: $('Resultado do Deploy').first().json.workflowName, action: $('Resultado do Deploy').first().json.action, id: $('Resultado do Deploy').first().json.workflowId }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond - Deploy OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3160, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'skipped', reason: $json.reason || 'no_workflow_changes' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-skipped",
+      "name": "Respond - Skipped",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [700, 500]
+    }
+  ],
+  "connections": {
+    "Webhook - GitHub Push": {
+      "main": [[{ "node": "Parse GitHub Push", "type": "main", "index": 0 }]]
+    },
+    "Parse GitHub Push": {
+      "main": [[{ "node": "Tem Workflow Alterado?", "type": "main", "index": 0 }]]
+    },
+    "Tem Workflow Alterado?": {
+      "main": [
+        [{ "node": "Download Workflow JSON", "type": "main", "index": 0 }],
+        [{ "node": "Respond - Skipped", "type": "main", "index": 0 }]
+      ]
+    },
+    "Download Workflow JSON": {
+      "main": [[{ "node": "Prepara Dados do Workflow", "type": "main", "index": 0 }]]
+    },
+    "Prepara Dados do Workflow": {
+      "main": [[{ "node": "n8n API - Lista Workflows", "type": "main", "index": 0 }]]
+    },
+    "n8n API - Lista Workflows": {
+      "main": [[{ "node": "Prepara Deploy", "type": "main", "index": 0 }]]
+    },
+    "Prepara Deploy": {
+      "main": [[{ "node": "É Update?", "type": "main", "index": 0 }]]
+    },
+    "É Update?": {
+      "main": [
+        [{ "node": "n8n API - Deactivate", "type": "main", "index": 0 }],
+        [{ "node": "n8n API - Create Workflow", "type": "main", "index": 0 }]
+      ]
+    },
+    "n8n API - Deactivate": {
+      "main": [[{ "node": "Restaura Contexto", "type": "main", "index": 0 }]]
+    },
+    "Restaura Contexto": {
+      "main": [[{ "node": "n8n API - Update Workflow", "type": "main", "index": 0 }]]
+    },
+    "n8n API - Update Workflow": {
+      "main": [[{ "node": "Resultado do Deploy", "type": "main", "index": 0 }]]
+    },
+    "n8n API - Create Workflow": {
+      "main": [[{ "node": "Resultado do Deploy", "type": "main", "index": 0 }]]
+    },
+    "Resultado do Deploy": {
+      "main": [[{ "node": "n8n API - Activate Workflow", "type": "main", "index": 0 }]]
+    },
+    "n8n API - Activate Workflow": {
+      "main": [[{ "node": "Respond - Deploy OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [
+    { "name": "GitOps", "id": "5" },
+    { "name": "Infrastructure", "id": "6" }
+  ]
+}
