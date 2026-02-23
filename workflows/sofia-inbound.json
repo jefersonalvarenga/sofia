@@ -83,7 +83,7 @@
       "credentials": {
         "supabaseApi": {
           "id": "supabase-easyscale",
-          "name": "Supabase EasyScale"
+          "name": "Supabase account"
         }
       }
     },
@@ -116,7 +116,7 @@
       "credentials": {
         "supabaseApi": {
           "id": "supabase-easyscale",
-          "name": "Supabase EasyScale"
+          "name": "Supabase account"
         }
       },
       "onError": "continueRegularOutput"
@@ -306,7 +306,7 @@
       "credentials": {
         "supabaseApi": {
           "id": "supabase-easyscale",
-          "name": "Supabase EasyScale"
+          "name": "Supabase account"
         }
       },
       "onError": "continueRegularOutput"
