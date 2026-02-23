@@ -59,10 +59,14 @@
       "parameters": {
         "operation": "upsert",
         "schema": {
-          "value": "public"
+          "__rl": true,
+          "value": "public",
+          "mode": "name"
         },
         "table": {
-          "value": "customers"
+          "__rl": true,
+          "value": "customers",
+          "mode": "name"
         },
         "columns": {
           "mappingMode": "defineBelow",
@@ -91,10 +95,14 @@
       "parameters": {
         "operation": "getAll",
         "schema": {
-          "value": "public"
+          "__rl": true,
+          "value": "public",
+          "mode": "name"
         },
         "table": {
-          "value": "Instance"
+          "__rl": true,
+          "value": "Instance",
+          "mode": "name"
         },
         "filters": {
           "conditions": [
@@ -277,10 +285,14 @@
       "parameters": {
         "operation": "update",
         "schema": {
-          "value": "public"
+          "__rl": true,
+          "value": "public",
+          "mode": "name"
         },
         "table": {
-          "value": "active_chats"
+          "__rl": true,
+          "value": "active_chats",
+          "mode": "name"
         },
         "filters": {
           "conditions": [
