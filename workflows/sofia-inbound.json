@@ -291,6 +291,87 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [700, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-reset",
+              "leftValue": "={{ $json.messageContent.trim() }}",
+              "rightValue": "#reset",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e-comando-reset",
+      "name": "É Comando Reset?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1140, 480]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=DELETE FROM public.sessions WHERE session_id = '{{ $json.remoteJid }}:{{ $json.clinicId }}'",
+        "options": {}
+      },
+      "id": "limpar-sessao",
+      "name": "Limpar Sessão",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1360, 480],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-account",
+          "name": "Postgres account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=DELETE FROM public.conversations WHERE lead_id = (SELECT id FROM public.customers WHERE phone = '{{ $('É Comando Reset?').first().json.phone }}' LIMIT 1)",
+        "options": {}
+      },
+      "id": "limpar-conversas",
+      "name": "Limpar Conversas",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1580, 480],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-account",
+          "name": "Postgres account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ok', processed: false, reason: 'reset' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-reset-ok",
+      "name": "Respond - Reset OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1800, 480]
     }
   ],
   "connections": {
@@ -316,7 +397,19 @@
       "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
     },
     "Buscar Slots Disponíveis": {
-      "main": [[{ "node": "Chamar Sofia API", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "É Comando Reset?", "type": "main", "index": 0 }]]
+    },
+    "É Comando Reset?": {
+      "main": [
+        [{ "node": "Limpar Sessão", "type": "main", "index": 0 }],
+        [{ "node": "Chamar Sofia API", "type": "main", "index": 0 }]
+      ]
+    },
+    "Limpar Sessão": {
+      "main": [[{ "node": "Limpar Conversas", "type": "main", "index": 0 }]]
+    },
+    "Limpar Conversas": {
+      "main": [[{ "node": "Respond - Reset OK", "type": "main", "index": 0 }]]
     },
     "Chamar Sofia API": {
       "main": [[{ "node": "Processa Resposta Sofia", "type": "main", "index": 0 }]]
