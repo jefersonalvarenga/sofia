@@ -383,15 +383,12 @@
     },
     "Filtrar Mensagem Válida": {
       "main": [
-        [
-          { "node": "Upsert Customer", "type": "main", "index": 0 },
-          { "node": "Buscar Config Clínica", "type": "main", "index": 0 }
-        ],
+        [{ "node": "Upsert Customer", "type": "main", "index": 0 }],
         [{ "node": "Respond - Ignorada", "type": "main", "index": 0 }]
       ]
     },
     "Upsert Customer": {
-      "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Buscar Config Clínica", "type": "main", "index": 0 }]]
     },
     "Buscar Config Clínica": {
       "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
