@@ -73,7 +73,7 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
     # 3. Load clinic profile
     clinic_result = (
         supabase.table("clinic_profiles")
-        .select("clinic_name, assistant_name, avg_ticket, address")
+        .select("clinic_name, assistant_name, avg_ticket, address")  # clinic_name added via migration 004
         .eq("clinic_id", clinic_id)
         .maybe_single()
         .execute()
@@ -87,14 +87,15 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
     # 4. Load services + offers
     services_result = (
         supabase.table("clinic_services")
-        .select("service_name, description, price, duration_min")
+        .select("name, description, price")
         .eq("clinic_id", clinic_id)
         .execute()
     )
     offers_result = (
         supabase.table("clinic_offers")
-        .select("offer_name, description, price, valid_until")
+        .select("offer_name, final_price, valid_to, is_active")
         .eq("clinic_id", clinic_id)
+        .eq("is_active", True)
         .execute()
     )
     services_context = json.dumps(
@@ -108,7 +109,7 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
     # 5. Load business rules
     rules_result = (
         supabase.table("clinic_business_rules")
-        .select("rule_key, rule_value")
+        .select("rule_type, content")
         .eq("clinic_id", clinic_id)
         .execute()
     )
