@@ -35,8 +35,8 @@ def load_session(remote_jid: str, clinic_id: str,
             .maybe_single()
             .execute()
         )
-        if map_result:
-            clinic_id = map_result["clinic_id"]
+        if map_result.data:
+            clinic_id = map_result.data["clinic_id"]
 
     phone = _phone_from_jid(remote_jid)
     session_id = f"{remote_jid}:{clinic_id}"
@@ -71,10 +71,10 @@ def load_session(remote_jid: str, clinic_id: str,
     conversation_stage: str = "new"
     patient_name: Optional[str] = push_name
 
-    if session_result:
-        raw_history = session_result.get("history") or []
+    if session_result.data:
+        raw_history = session_result.data.get("history") or []
         history = raw_history if isinstance(raw_history, list) else []
-        conversation_stage = session_result.get("conversation_stage") or "new"
+        conversation_stage = session_result.data.get("conversation_stage") or "new"
     else:
         # Create new session
         supabase.table("sf_sessions").insert(
@@ -98,9 +98,9 @@ def load_session(remote_jid: str, clinic_id: str,
     )
     clinic_name = "Clínica"
     assistant_name = "Sofia"
-    if clinic_result:
-        clinic_name = clinic_result.get("clinic_name") or "Clínica"
-        assistant_name = clinic_result.get("assistant_name") or "Sofia"
+    if clinic_result.data:
+        clinic_name = clinic_result.data.get("clinic_name") or "Clínica"
+        assistant_name = clinic_result.data.get("assistant_name") or "Sofia"
 
     # 4. Load services + offers
     services_result = (
