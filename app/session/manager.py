@@ -167,33 +167,7 @@ def save_session(state: SofiaState) -> None:
         }
     ).eq("session_id", state["session_id"]).execute()
 
-    # 2. Insert conversation rows
-    customer_id = state.get("customer_id")
-    if customer_id:
-        # Human message row
-        supabase.table("conversations").insert(
-            {
-                "lead_id": customer_id,
-                "flow": "sofia",
-                "role": "human",
-                "content": state["message"],
-                "stage": state.get("conversation_stage", "active"),
-            }
-        ).execute()
-
-        # Agent response row
-        if state.get("response_message") and state.get("agent_name"):
-            supabase.table("conversations").insert(
-                {
-                    "lead_id": customer_id,
-                    "flow": "sofia",
-                    "role": state["agent_name"],
-                    "content": state["response_message"],
-                    "stage": state.get("conversation_stage", "active"),
-                }
-            ).execute()
-
-    # 3. Insert agent activation audit
+    # 2. Insert agent activation audit
     if state.get("agent_name"):
         from app.core.config import get_settings
         sofia_version = get_settings().sofia_version
