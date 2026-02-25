@@ -34,6 +34,7 @@ def node_load_context(state: SofiaState) -> dict:
             remote_jid=state["remote_jid"],
             clinic_id=state["clinic_id"],
             push_name=state.get("push_name"),
+            instance_id=state.get("instance_id", ""),
         )
         return ctx
     except Exception as e:

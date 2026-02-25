@@ -3,6 +3,7 @@ Session Manager — loads and saves Sofia conversation state in Supabase.
 """
 
 import json
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from app.core.supabase_client import get_supabase
 from app.session.models import SofiaState
@@ -13,7 +14,9 @@ def _phone_from_jid(remote_jid: str) -> str:
     return remote_jid.split("@")[0]
 
 
-def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = None) -> Dict[str, Any]:
+def load_session(remote_jid: str, clinic_id: str,
+                 push_name: Optional[str] = None,
+                 instance_id: str = "") -> Dict[str, Any]:
     """
     Load or create a Sofia session for the given patient + clinic.
 
@@ -22,6 +25,19 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
       clinic_name, assistant_name, services_context, business_rules
     """
     supabase = get_supabase()
+
+    # Auto-resolve clinic_id via instance_clinic_map if invalid
+    if (not clinic_id or clinic_id == "unknown") and instance_id:
+        map_result = (
+            supabase.table("instance_clinic_map")
+            .select("clinic_id")
+            .eq("instance_name", instance_id)
+            .maybe_single()
+            .execute()
+        )
+        if map_result.data:
+            clinic_id = map_result.data["clinic_id"]
+
     phone = _phone_from_jid(remote_jid)
     session_id = f"{remote_jid}:{clinic_id}"
 
@@ -44,8 +60,8 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
 
     # 2. Load or create session
     session_result = (
-        supabase.table("sessions")
-        .select("session_id, history, conversation_stage, intentions, intake, appointment")
+        supabase.table("sf_sessions")
+        .select("session_id, history, conversation_stage")
         .eq("session_id", session_id)
         .maybe_single()
         .execute()
@@ -61,9 +77,11 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
         conversation_stage = session_result.data.get("conversation_stage") or "new"
     else:
         # Create new session
-        supabase.table("sessions").insert(
+        supabase.table("sf_sessions").insert(
             {
                 "session_id": session_id,
+                "clinic_id": clinic_id,
+                "remote_jid": remote_jid,
                 "customer_id": customer_id,
                 "history": [],
                 "conversation_stage": "new",
@@ -140,11 +158,12 @@ def save_session(state: SofiaState) -> None:
     if state.get("response_message") and state.get("agent_name"):
         new_history.append({"role": state["agent_name"], "content": state["response_message"]})
 
-    # 1. Update sessions table
-    supabase.table("sessions").update(
+    # 1. Update sf_sessions table
+    supabase.table("sf_sessions").update(
         {
             "history": new_history,
             "conversation_stage": state.get("conversation_stage", "active"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     ).eq("session_id", state["session_id"]).execute()
 
