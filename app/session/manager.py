@@ -32,9 +32,9 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
             {
                 "phone": phone,
                 "clinic_id": clinic_id,
-                "push_name": push_name or "",
+                "full_name": push_name or "",
             },
-            on_conflict="phone,clinic_id",
+            on_conflict="clinic_id,phone",
         )
         .execute()
     )
@@ -45,7 +45,7 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
     # 2. Load or create session
     session_result = (
         supabase.table("sessions")
-        .select("id, session_id, history, conversation_stage, intentions, intake, appointment")
+        .select("session_id, history, conversation_stage, intentions, intake, appointment")
         .eq("session_id", session_id)
         .maybe_single()
         .execute()
@@ -64,7 +64,7 @@ def load_session(remote_jid: str, clinic_id: str, push_name: Optional[str] = Non
         supabase.table("sessions").insert(
             {
                 "session_id": session_id,
-                "lead_id": customer_id,
+                "customer_id": customer_id,
                 "history": [],
                 "conversation_stage": "new",
             }
