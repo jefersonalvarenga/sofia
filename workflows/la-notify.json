@@ -1,0 +1,117 @@
+{
+  "name": "LA - Job Notification (WhatsApp)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "la-notify",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-la-notify",
+      "name": "Webhook - LA Notify",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "la-notify"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse notifier.py payload\n// Expected: { event, phone, message, job_id, client_name, ... }\n\nconst body = $input.first().json.body || $input.first().json;\n\nconst event       = body.event || 'unknown';\nconst phone       = body.phone || '';\nconst message     = body.message || '';\nconst jobId       = body.job_id || '';\nconst clientName  = body.client_name || '';\n\nif (!phone || !message) {\n  return [{ json: { skip: true, reason: 'missing phone or message' } }];\n}\n\n// Format phone for Evolution API\n// notifier.py sends plain number (e.g. 5511999999999)\n// Evolution API accepts this format directly\nconst formattedPhone = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;\n\nreturn [{\n  json: {\n    skip: false,\n    phone: formattedPhone,\n    message,\n    event,\n    jobId,\n    clientName\n  }\n}];"
+      },
+      "id": "parse-la-notify",
+      "name": "Parse Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-not-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-valid",
+      "name": "Filtrar Válido",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_NOTIFY_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.phone, text: $json.message }) }}",
+        "options": {
+          "timeout": 10000
+        },
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 2000
+      },
+      "id": "enviar-whatsapp",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - LA Notify": {
+      "main": [
+        [{ "node": "Parse Payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Payload": {
+      "main": [
+        [{ "node": "Filtrar Válido", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filtrar Válido": {
+      "main": [
+        [{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["la", "notify", "whatsapp"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-25T00:00:00.000Z",
+  "versionId": "1"
+}
