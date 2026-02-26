@@ -361,6 +361,25 @@
     },
     {
       "parameters": {
+        "operation": "executeQuery",
+        "query": "=DELETE FROM public.appointments WHERE remote_jid = '{{ $('É Comando Reset?').first().json.remoteJid }}' AND clinic_id = '{{ $('É Comando Reset?').first().json.clinicId }}'",
+        "options": {}
+      },
+      "id": "limpar-appointments",
+      "name": "Limpar Appointments",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1800, 480],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-account",
+          "name": "Postgres account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ status: 'ok', processed: false, reason: 'reset' }) }}",
         "options": {
@@ -371,7 +390,7 @@
       "name": "Respond - Reset OK",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1800, 480]
+      "position": [2020, 480]
     }
   ],
   "connections": {
@@ -406,6 +425,9 @@
       "main": [[{ "node": "Limpar Customer", "type": "main", "index": 0 }]]
     },
     "Limpar Customer": {
+      "main": [[{ "node": "Limpar Appointments", "type": "main", "index": 0 }]]
+    },
+    "Limpar Appointments": {
       "main": [[{ "node": "Respond - Reset OK", "type": "main", "index": 0 }]]
     },
     "Chamar Sofia API": {
