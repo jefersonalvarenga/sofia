@@ -331,11 +331,14 @@ def print_summary(results: List[ScenarioResult], avg_score: float) -> None:
         print(line, end="")
 
 
-def write_report_file(results: List[ScenarioResult], avg_score: float) -> None:
+def write_report_file(results: List[ScenarioResult], avg_score: float, failure_reason: str = "") -> None:
     """Grava relatório em ci-test-report.txt para leitura pelo diagnose_failure.py."""
     report_path = os.getenv("CI_REPORT_FILE", "ci-test-report.txt")
+    lines = _build_summary_lines(results, avg_score)
+    if failure_reason:
+        lines.append(f"\nFALHA: {failure_reason}\n")
     with open(report_path, "w") as f:
-        f.writelines(_build_summary_lines(results, avg_score))
+        f.writelines(lines)
 
 
 def write_github_output(results: List[ScenarioResult], avg_score: float) -> None:
@@ -418,12 +421,17 @@ def main() -> int:
 
     print("\n[3/3] Emitindo resultados...")
     print_summary(results, avg_score)
-    write_report_file(results, avg_score)
+
+    failure_reason = ""
+    if avg_score < MIN_AVG_SCORE:
+        failure_reason = f"score medio {avg_score:.2f} abaixo do minimo {MIN_AVG_SCORE}"
+
+    write_report_file(results, avg_score, failure_reason)
     write_github_output(results, avg_score)
     write_github_step_summary(results, avg_score)
 
-    if avg_score < MIN_AVG_SCORE:
-        print(f"\nFALHA: score medio {avg_score:.2f} abaixo do minimo {MIN_AVG_SCORE}")
+    if failure_reason:
+        print(f"\nFALHA: {failure_reason}")
         return 1
 
     print(f"\nOK: todos os criterios atendidos (score={avg_score:.2f})")

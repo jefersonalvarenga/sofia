@@ -19,6 +19,7 @@ import sys
 REPORT_FILE = os.getenv("CI_REPORT_FILE", "ci-test-report.txt")
 GH_REPO = os.getenv("GH_REPO", "")
 GH_SHA = os.getenv("GH_SHA", "")
+GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID", "")
 
 SYSTEM_PROMPT = """\
 Você é um engenheiro sênior especialista em FastAPI, DSPy e LangGraph.
@@ -95,13 +96,13 @@ def main() -> int:
     print("Chamando GPT-4o-mini para diagnosticar a falha...")
     diagnosis = call_gpt(report)
 
+    run_url = f"https://github.com/{GH_REPO}/actions/runs/{GITHUB_RUN_ID}"
     comment = (
         "## Sofia CI — Diagnóstico de Falha 🔍\n\n"
         f"{diagnosis}\n\n"
         "---\n"
         f"_Gerado por `gpt-4o-mini` · commit `{GH_SHA[:8]}` · "
-        "[ver log completo](https://github.com/"
-        f"{GH_REPO}/actions/runs/${{{{ env.GITHUB_RUN_ID }}}})_"
+        f"[ver log completo]({run_url})_"
     )
 
     post_commit_comment(comment)
