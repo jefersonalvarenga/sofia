@@ -52,6 +52,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run unit tests
+        run: pytest tests/ -v --tb=short
+
       - name: Start Sofia API (background)
         run: |
           uvicorn main:app --host 0.0.0.0 --port 8000 &
