@@ -324,7 +324,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=DELETE FROM public.sessions WHERE session_id = '{{ $json.remoteJid }}:{{ $json.clinicId }}'",
+        "query": "=DELETE FROM public.sf_sessions WHERE session_id = '{{ $json.remoteJid }}:{{ $json.clinicId }}'",
         "options": {}
       },
       "id": "limpar-sessao",
@@ -343,11 +343,11 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=DELETE FROM public.conversations WHERE lead_id = (SELECT id FROM public.customers WHERE phone = '{{ $('É Comando Reset?').first().json.phone }}' LIMIT 1)",
+        "query": "=DELETE FROM public.customers WHERE phone = '{{ $('É Comando Reset?').first().json.phone }}' AND clinic_id = '{{ $json.clinicId }}'",
         "options": {}
       },
       "id": "limpar-conversas",
-      "name": "Limpar Conversas",
+      "name": "Limpar Customer",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [1580, 480],
@@ -403,9 +403,9 @@
       ]
     },
     "Limpar Sessão": {
-      "main": [[{ "node": "Limpar Conversas", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Limpar Customer", "type": "main", "index": 0 }]]
     },
-    "Limpar Conversas": {
+    "Limpar Customer": {
       "main": [[{ "node": "Respond - Reset OK", "type": "main", "index": 0 }]]
     },
     "Chamar Sofia API": {
