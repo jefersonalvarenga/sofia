@@ -128,7 +128,7 @@ def _create_appointment(state: SofiaState, scheduler_result: dict):
 
         # Guard: skip if slot is already taken
         existing = (
-            supabase.table("appointments")
+            supabase.table("sf_appointments")
             .select("id")
             .eq("clinic_id", clinic_id)
             .eq("scheduled_at", chosen_slot)
@@ -152,7 +152,7 @@ def _create_appointment(state: SofiaState, scheduler_result: dict):
             "status": "scheduled",
             "source": "sofia",
         }
-        result = supabase.table("appointments").insert(record).execute()
+        result = supabase.table("sf_appointments").insert(record).execute()
         return result.data[0] if result.data else record
     except Exception as e:
         print(f"[_create_appointment] Error: {e}")
