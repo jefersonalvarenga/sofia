@@ -158,6 +158,9 @@ def save_session(state: SofiaState) -> None:
     if state.get("response_message") and state.get("agent_name"):
         new_history.append({"role": state["agent_name"], "content": state["response_message"]})
 
+    # Truncate to last 20 entries (10 human+agent pairs) to avoid LLM context overflow
+    new_history = new_history[-20:]
+
     # 1. Update sf_sessions table
     supabase.table("sf_sessions").update(
         {

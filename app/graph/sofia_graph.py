@@ -4,6 +4,8 @@ Sofia LangGraph — main conversational flow.
 START → load_context → route_intent → [faq_responder | scheduler | human_escalation] → save_session → END
 """
 
+import json
+
 from langgraph.graph import StateGraph, END
 
 from app.session.models import SofiaState
@@ -78,6 +80,15 @@ def node_faq_responder(state: SofiaState) -> dict:
     return result
 
 
+def _extract_service_names(services_context: str) -> list:
+    """Extract service names from JSON services_context string."""
+    try:
+        ctx = json.loads(services_context)
+        return [s.get("name", "") for s in ctx.get("services", []) if s.get("name")]
+    except Exception:
+        return []
+
+
 def node_scheduler(state: SofiaState) -> dict:
     """Handle appointment scheduling (multi-turn)."""
     print(f"[scheduler] Stage: {state.get('conversation_stage')}")
@@ -86,6 +97,8 @@ def node_scheduler(state: SofiaState) -> dict:
     if current_stage not in {"collecting_service", "presenting_slots", "confirming", "booked"}:
         current_stage = "collecting_service"
 
+    service_names = _extract_service_names(state.get("services_context", "{}"))
+
     result = _scheduler_agent.forward(
         patient_message=state["message"],
         history=state.get("history", []),
@@ -93,6 +106,7 @@ def node_scheduler(state: SofiaState) -> dict:
         clinic_name=state.get("clinic_name", "Clínica"),
         patient_name=state.get("patient_name") or state.get("push_name") or "Paciente",
         stage=current_stage,
+        services_list=service_names,
     )
 
     # If booked, create appointment record
@@ -171,10 +185,19 @@ def node_save_session(state: SofiaState) -> dict:
 
 def _route_after_intent(state: SofiaState) -> str:
     intent = state.get("intent", "UNCLASSIFIED")
-    if intent == "SCHEDULE":
-        return "scheduler"
+    confidence = state.get("confidence") or 0.0
+
+    # HUMAN_ESCALATION always takes priority regardless of confidence
     if intent == "HUMAN_ESCALATION":
         return "human_escalation"
+
+    # Low confidence → safe fallback to FAQ rather than risk wrong agent
+    if confidence < 0.5:
+        print(f"[router] Low confidence ({confidence:.2f}) for {intent} → faq_responder")
+        return "faq_responder"
+
+    if intent == "SCHEDULE":
+        return "scheduler"
     # FAQ, GREETING, REENGAGE, UNCLASSIFIED → faq_responder
     return "faq_responder"
 

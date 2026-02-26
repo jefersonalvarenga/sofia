@@ -34,6 +34,7 @@ class SofiaState(TypedDict):
 
     # ---- Outputs produced by agents ----
     intent: Optional[str]
+    confidence: Optional[float]
     response_message: Optional[str]
     agent_name: Optional[str]
     requires_human: bool

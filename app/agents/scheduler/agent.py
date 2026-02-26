@@ -12,6 +12,8 @@ from .signatures import SchedulerSignature
 
 VALID_STAGES = {"collecting_service", "presenting_slots", "confirming", "booked"}
 
+WEEKDAYS_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+
 
 class SchedulerAgent(dspy.Module):
     def __init__(self):
@@ -57,6 +59,15 @@ class SchedulerAgent(dspy.Module):
             return None
         return str(raw).strip()
 
+    def _humanize_slot(self, slot: str) -> str:
+        """Convert 'YYYY-MM-DD HH:MM' to 'Qui, 26/02 às 09h (YYYY-MM-DD HH:MM)'."""
+        try:
+            dt = datetime.strptime(slot, "%Y-%m-%d %H:%M")
+            dow = WEEKDAYS_PT[dt.weekday()]
+            return f"{dow}, {dt.day:02d}/{dt.month:02d} às {dt.hour:02d}h ({slot})"
+        except ValueError:
+            return slot
+
     def forward(
         self,
         patient_message: str,
@@ -65,15 +76,21 @@ class SchedulerAgent(dspy.Module):
         clinic_name: str,
         patient_name: str,
         stage: str,
+        services_list: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         history_str = self._format_history(history)
-        slots_str = ", ".join(available_slots) if available_slots else "Sem horários disponíveis"
+        slots_str = (
+            ", ".join(self._humanize_slot(s) for s in available_slots)
+            if available_slots else "Sem horários disponíveis"
+        )
+        services_str = ", ".join(services_list[:50]) if services_list else ""
 
         try:
             result = self.process(
                 patient_message=patient_message,
                 history_str=history_str,
                 available_slots=slots_str,
+                services_list=services_str,
                 clinic_name=clinic_name,
                 patient_name=patient_name or "Paciente",
                 stage=stage,
