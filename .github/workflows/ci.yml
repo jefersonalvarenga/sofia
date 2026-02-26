@@ -35,7 +35,7 @@ jobs:
       TEST_CLINIC_ID: a4a04b17-0158-48b2-b4e3-1175825c84c4
 
       # Score mínimo para passar o job (0.0–1.0)
-      MIN_AVG_SCORE: "0.8"
+      MIN_AVG_SCORE: "1.1"  # TEMP: forçar falha para testar diagnose_failure.py
 
     steps:
       - name: Checkout
