@@ -60,6 +60,16 @@ jobs:
         id: integration
         run: python scripts/integration_test.py --base-url http://localhost:8000
 
+      - name: Diagnose failure
+        if: failure()
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python scripts/diagnose_failure.py
+
       - name: Stop Sofia API
         if: always()
         run: |

@@ -296,31 +296,46 @@ def health_check() -> bool:
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 
-def print_summary(results: List[ScenarioResult], avg_score: float) -> None:
-    print("\n" + "=" * 65)
-    print("SOFIA INTEGRATION TEST — RESULTADO FINAL")
-    print("=" * 65)
+def _build_summary_lines(results: List[ScenarioResult], avg_score: float) -> List[str]:
+    """Constrói as linhas do resumo (compartilhado entre stdout e arquivo)."""
+    lines = []
+    lines.append("\n" + "=" * 65 + "\n")
+    lines.append("SOFIA INTEGRATION TEST — RESULTADO FINAL\n")
+    lines.append("=" * 65 + "\n")
     for r in results:
         status = "PASS" if r.passed else "FAIL"
-        print(f"\n[{status}] {r.name}  score={r.score:.2f}")
-        print(f"       {r.description}")
+        lines.append(f"\n[{status}] {r.name}  score={r.score:.2f}\n")
+        lines.append(f"       {r.description}\n")
         for tr in r.turns:
-            print(
+            lines.append(
                 f"       turn {tr.turn}: agent={tr.agent_name!r}"
                 f" stage={tr.conversation_stage!r}"
-                f" requires_human={tr.requires_human}"
+                f" requires_human={tr.requires_human}\n"
             )
             if tr.response_message:
                 snippet = tr.response_message[:120].replace("\n", " ")
-                print(f"       resposta: {snippet!r}")
+                lines.append(f"       resposta: {snippet!r}\n")
         if r.failure_reason:
-            print(f"       >> {r.failure_reason}")
+            lines.append(f"       >> {r.failure_reason}\n")
 
     passed = sum(1 for r in results if r.passed)
-    print("\n" + "=" * 65)
-    print(f"AVG SCORE : {avg_score:.2f}  (minimo={MIN_AVG_SCORE})")
-    print(f"PASSOU    : {passed}/{len(results)}")
-    print("=" * 65)
+    lines.append("\n" + "=" * 65 + "\n")
+    lines.append(f"AVG SCORE : {avg_score:.2f}  (minimo={MIN_AVG_SCORE})\n")
+    lines.append(f"PASSOU    : {passed}/{len(results)}\n")
+    lines.append("=" * 65 + "\n")
+    return lines
+
+
+def print_summary(results: List[ScenarioResult], avg_score: float) -> None:
+    for line in _build_summary_lines(results, avg_score):
+        print(line, end="")
+
+
+def write_report_file(results: List[ScenarioResult], avg_score: float) -> None:
+    """Grava relatório em ci-test-report.txt para leitura pelo diagnose_failure.py."""
+    report_path = os.getenv("CI_REPORT_FILE", "ci-test-report.txt")
+    with open(report_path, "w") as f:
+        f.writelines(_build_summary_lines(results, avg_score))
 
 
 def write_github_output(results: List[ScenarioResult], avg_score: float) -> None:
@@ -403,6 +418,7 @@ def main() -> int:
 
     print("\n[3/3] Emitindo resultados...")
     print_summary(results, avg_score)
+    write_report_file(results, avg_score)
     write_github_output(results, avg_score)
     write_github_step_summary(results, avg_score)
 
