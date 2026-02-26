@@ -29,7 +29,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # Auto-resolve clinic_id via instance_clinic_map if invalid
     if (not clinic_id or clinic_id == "unknown") and instance_id:
         map_result = (
-            supabase.table("instance_clinic_map")
+            supabase.table("sf_instance_clinic_map")
             .select("clinic_id")
             .eq("instance_name", instance_id)
             .maybe_single()
@@ -49,7 +49,7 @@ def load_session(remote_jid: str, clinic_id: str,
 
     # 1. Upsert customer
     customer_result = (
-        supabase.table("customers")
+        supabase.table("sf_customers")
         .upsert(
             {
                 "phone": phone,
@@ -96,7 +96,7 @@ def load_session(remote_jid: str, clinic_id: str,
 
     # 3. Load clinic profile
     clinic_result = (
-        supabase.table("clinic_profiles")
+        supabase.table("sf_clinic_profiles")
         .select("clinic_name, assistant_name, avg_ticket, address")  # clinic_name added via migration 004
         .eq("clinic_id", clinic_id)
         .maybe_single()
@@ -110,13 +110,13 @@ def load_session(remote_jid: str, clinic_id: str,
 
     # 4. Load services + offers
     services_result = (
-        supabase.table("clinic_services")
+        supabase.table("sf_clinic_services")
         .select("name, description, price")
         .eq("clinic_id", clinic_id)
         .execute()
     )
     offers_result = (
-        supabase.table("clinic_offers")
+        supabase.table("sf_clinic_offers")
         .select("offer_name, final_price, valid_to, is_active")
         .eq("clinic_id", clinic_id)
         .eq("is_active", True)
@@ -132,7 +132,7 @@ def load_session(remote_jid: str, clinic_id: str,
 
     # 5. Load business rules
     rules_result = (
-        supabase.table("clinic_business_rules")
+        supabase.table("sf_clinic_business_rules")
         .select("rule_type, content")
         .eq("clinic_id", clinic_id)
         .execute()

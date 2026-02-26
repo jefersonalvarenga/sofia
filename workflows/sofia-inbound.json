@@ -58,7 +58,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=INSERT INTO public.customers (phone, push_name, clinic_id)\nVALUES ('{{ $('Parse Evolution Payload').first().json.phone }}', '{{ $('Parse Evolution Payload').first().json.pushName }}', '{{ $json.clinic_id }}')\nON CONFLICT (phone, clinic_id) DO UPDATE SET push_name = EXCLUDED.push_name, updated_at = NOW()",
+        "query": "=INSERT INTO public.sf_customers (phone, push_name, clinic_id)\nVALUES ('{{ $('Parse Evolution Payload').first().json.phone }}', '{{ $('Parse Evolution Payload').first().json.pushName }}', '{{ $json.clinic_id }}')\nON CONFLICT (phone, clinic_id) DO UPDATE SET push_name = EXCLUDED.push_name, updated_at = NOW()",
         "options": {}
       },
       "id": "upsert-customer",
@@ -77,7 +77,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=SELECT icm.clinic_id, COALESCE((SELECT json_agg(TO_CHAR(a.scheduled_at, 'YYYY-MM-DD HH24:MI') ORDER BY a.scheduled_at) FROM public.sf_appointments a WHERE a.clinic_id = icm.clinic_id AND a.status NOT IN ('cancelled', 'no_show') AND a.scheduled_at >= NOW() AND a.scheduled_at <= NOW() + INTERVAL '7 days'), '[]'::json) AS booked_slots FROM public.instance_clinic_map icm WHERE icm.instance_name = '{{ $('Parse Evolution Payload').first().json.instanceName }}' LIMIT 1",
+        "query": "=SELECT icm.clinic_id, COALESCE((SELECT json_agg(TO_CHAR(a.scheduled_at, 'YYYY-MM-DD HH24:MI') ORDER BY a.scheduled_at) FROM public.sf_appointments a WHERE a.clinic_id = icm.clinic_id AND a.status NOT IN ('cancelled', 'no_show') AND a.scheduled_at >= NOW() AND a.scheduled_at <= NOW() + INTERVAL '7 days'), '[]'::json) AS booked_slots FROM public.sf_instance_clinic_map icm WHERE icm.instance_name = '{{ $('Parse Evolution Payload').first().json.instanceName }}' LIMIT 1",
         "options": {}
       },
       "id": "buscar-config-clinica",
@@ -248,7 +248,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=UPDATE public.active_chats SET is_paused = true, paused_reason = 'human_escalation' WHERE remote_jid = '{{ $('Parse Evolution Payload').first().json.remoteJid }}'",
+        "query": "=UPDATE public.sf_active_chats SET is_paused = true, paused_reason = 'human_escalation' WHERE remote_jid = '{{ $('Parse Evolution Payload').first().json.remoteJid }}'",
         "options": {}
       },
       "id": "pausar-sofia",
@@ -343,7 +343,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=DELETE FROM public.customers WHERE phone = '{{ $('É Comando Reset?').first().json.phone }}' AND clinic_id = '{{ $json.clinicId }}'",
+        "query": "=DELETE FROM public.sf_customers WHERE phone = '{{ $('É Comando Reset?').first().json.phone }}' AND clinic_id = '{{ $json.clinicId }}'",
         "options": {}
       },
       "id": "limpar-conversas",
