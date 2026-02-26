@@ -360,11 +360,12 @@ def write_github_step_summary(results: List[ScenarioResult], avg_score: float) -
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    global BASE_URL
+
     parser = argparse.ArgumentParser(description="Sofia Integration Test")
     parser.add_argument("--base-url", default=BASE_URL, help="Base URL da API Sofia")
     args = parser.parse_args()
 
-    global BASE_URL
     BASE_URL = args.base_url
 
     print("Sofia Integration Test")
