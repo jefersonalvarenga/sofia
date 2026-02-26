@@ -104,18 +104,37 @@ def node_scheduler(state: SofiaState) -> dict:
 
 
 def _create_appointment(state: SofiaState, scheduler_result: dict):
-    """Insert appointment record into Supabase."""
+    """Insert appointment record into Supabase. Guards against double booking."""
     try:
         from app.core.supabase_client import get_supabase
         supabase = get_supabase()
+
+        chosen_slot = scheduler_result.get("chosen_slot")
+        clinic_id = state["clinic_id"]
+
+        # Guard: skip if slot is already taken
+        existing = (
+            supabase.table("appointments")
+            .select("id")
+            .eq("clinic_id", clinic_id)
+            .eq("scheduled_at", chosen_slot)
+            .neq("status", "cancelled")
+            .neq("status", "no_show")
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            print(f"[_create_appointment] Slot {chosen_slot} already booked, skipping.")
+            return None
+
         record = {
-            "clinic_id": state["clinic_id"],
+            "clinic_id": clinic_id,
             "customer_id": state.get("customer_id"),
             "session_id": state.get("session_id"),
             "remote_jid": state["remote_jid"],
             "patient_name": state.get("patient_name") or state.get("push_name"),
             "service_name": scheduler_result.get("service_requested"),
-            "scheduled_at": scheduler_result.get("chosen_slot"),
+            "scheduled_at": chosen_slot,
             "status": "scheduled",
             "source": "sofia",
         }

@@ -58,7 +58,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=INSERT INTO public.customers (phone, push_name)\nVALUES ('{{ $json.phone }}', '{{ $json.pushName }}')\nON CONFLICT (phone) DO UPDATE SET push_name = EXCLUDED.push_name, updated_at = NOW()",
+        "query": "=INSERT INTO public.customers (phone, push_name, clinic_id)\nVALUES ('{{ $('Parse Evolution Payload').first().json.phone }}', '{{ $('Parse Evolution Payload').first().json.pushName }}', '{{ $json.clinic_id }}')\nON CONFLICT (phone, clinic_id) DO UPDATE SET push_name = EXCLUDED.push_name, updated_at = NOW()",
         "options": {}
       },
       "id": "upsert-customer",
@@ -77,7 +77,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=SELECT clinic_id FROM public.instance_clinic_map WHERE instance_name = '{{ $('Parse Evolution Payload').first().json.instanceName }}' LIMIT 1",
+        "query": "=SELECT icm.clinic_id, COALESCE((SELECT json_agg(TO_CHAR(a.scheduled_at, 'YYYY-MM-DD HH24:MI') ORDER BY a.scheduled_at) FROM public.appointments a WHERE a.clinic_id = icm.clinic_id AND a.status NOT IN ('cancelled', 'no_show') AND a.scheduled_at >= NOW() AND a.scheduled_at <= NOW() + INTERVAL '7 days'), '[]'::json) AS booked_slots FROM public.instance_clinic_map icm WHERE icm.instance_name = '{{ $('Parse Evolution Payload').first().json.instanceName }}' LIMIT 1",
         "options": {}
       },
       "id": "buscar-config-clinica",
@@ -95,7 +95,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// ============================================\n// Generate available slots for scheduling\n// 3 próximos dias úteis, horários 9h-17h, de hora em hora\n// Filtra slots já ocupados\n// Retorna os 3 primeiros disponíveis\n// ============================================\n\nconst msgData = $('Parse Evolution Payload').first().json;\nconst clinicData = $('Buscar Config Clínica').first().json;\n\nconst clinicId = clinicData?.clinic_id || clinicData?.clinicId || clinicData?.clinicid || null;\n\n// Generate candidate slots: next 3 business days, 9-17h\nconst slots = [];\nconst now = new Date();\nlet daysAdded = 0;\nlet checkDate = new Date(now);\ncheckDate.setDate(checkDate.getDate() + 1); // Start from tomorrow\n\nwhile (daysAdded < 3) {\n  const dow = checkDate.getDay();\n  // Skip weekends\n  if (dow !== 0 && dow !== 6) {\n    for (let h = 9; h <= 17; h++) {\n      const slot = new Date(checkDate);\n      slot.setHours(h, 0, 0, 0);\n      const y = slot.getFullYear();\n      const m = String(slot.getMonth() + 1).padStart(2, '0');\n      const d = String(slot.getDate()).padStart(2, '0');\n      const hh = String(slot.getHours()).padStart(2, '0');\n      slots.push(`${y}-${m}-${d} ${hh}:00`);\n    }\n    daysAdded++;\n  }\n  checkDate.setDate(checkDate.getDate() + 1);\n}\n\n// Return first 3 available slots (no appointment filtering in this version)\nconst availableSlots = slots.slice(0, 3);\n\nreturn [{\n  json: {\n    ...msgData,\n    clinicId,\n    availableSlots\n  }\n}];"
+        "jsCode": "// ============================================\n// Generate available slots for scheduling\n// 3 próximos dias úteis, horários 9h-17h, de hora em hora\n// Filtra slots já ocupados (via booked_slots do Buscar Config Clínica)\n// Retorna os 3 primeiros disponíveis\n// ============================================\n\nconst msgData = $('Parse Evolution Payload').first().json;\nconst clinicData = $('Buscar Config Clínica').first().json;\n\nconst clinicId = clinicData?.clinic_id || null;\nconst bookedSlots = new Set(clinicData?.booked_slots || []);\n\n// Generate candidate slots: next 3 business days, 9-17h\nconst slots = [];\nconst now = new Date();\nlet daysAdded = 0;\nlet checkDate = new Date(now);\ncheckDate.setDate(checkDate.getDate() + 1); // Start from tomorrow\n\nwhile (daysAdded < 3) {\n  const dow = checkDate.getDay();\n  // Skip weekends\n  if (dow !== 0 && dow !== 6) {\n    for (let h = 9; h <= 17; h++) {\n      const slot = new Date(checkDate);\n      slot.setHours(h, 0, 0, 0);\n      const y = slot.getFullYear();\n      const m = String(slot.getMonth() + 1).padStart(2, '0');\n      const d = String(slot.getDate()).padStart(2, '0');\n      const hh = String(slot.getHours()).padStart(2, '0');\n      const slotStr = `${y}-${m}-${d} ${hh}:00`;\n      if (!bookedSlots.has(slotStr)) {\n        slots.push(slotStr);\n      }\n    }\n    daysAdded++;\n  }\n  checkDate.setDate(checkDate.getDate() + 1);\n}\n\n// Return first 3 available slots\nconst availableSlots = slots.slice(0, 3);\n\nreturn [{\n  json: {\n    ...msgData,\n    clinicId,\n    availableSlots\n  }\n}];"
       },
       "id": "gerar-slots",
       "name": "Buscar Slots Disponíveis",
@@ -402,14 +402,14 @@
     },
     "Filtrar Mensagem Válida": {
       "main": [
-        [{ "node": "Upsert Customer", "type": "main", "index": 0 }],
+        [{ "node": "Buscar Config Clínica", "type": "main", "index": 0 }],
         [{ "node": "Respond - Ignorada", "type": "main", "index": 0 }]
       ]
     },
-    "Upsert Customer": {
-      "main": [[{ "node": "Buscar Config Clínica", "type": "main", "index": 0 }]]
-    },
     "Buscar Config Clínica": {
+      "main": [[{ "node": "Upsert Customer", "type": "main", "index": 0 }]]
+    },
+    "Upsert Customer": {
       "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
     },
     "Buscar Slots Disponíveis": {
