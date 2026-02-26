@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancela runs anteriores da mesma branch ao fazer novo push
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-test:
+    name: Integration Test (HTTP)
+    runs-on: ubuntu-latest
+
+    # Pula se o commit tiver [skip ci] (ex: commits de auto-tune)
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    env:
+      # DSPy — OpenAI gpt-4o-mini (mais barato para CI)
+      DSPY_PROVIDER: openai
+      DSPY_MODEL: gpt-4o-mini
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # Sofia auth (mesmo valor configurado no n8n)
+      API_KEY: ${{ secrets.SOFIA_API_KEY }}
+
+      # Supabase — projeto sqbidkenikaqlvdlizot (brasilnatech)
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+      # Clínica de teste: Sorriso Da Gente
+      TEST_CLINIC_ID: a4a04b17-0158-48b2-b4e3-1175825c84c4
+
+      # Score mínimo para passar o job (0.0–1.0)
+      MIN_AVG_SCORE: "0.8"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start Sofia API (background)
+        run: |
+          uvicorn main:app --host 0.0.0.0 --port 8000 &
+          echo $! > /tmp/sofia.pid
+          echo "Sofia PID: $(cat /tmp/sofia.pid)"
+
+      - name: Run integration tests
+        id: integration
+        run: python scripts/integration_test.py --base-url http://localhost:8000
+
+      - name: Stop Sofia API
+        if: always()
+        run: |
+          if [ -f /tmp/sofia.pid ]; then
+            kill "$(cat /tmp/sofia.pid)" 2>/dev/null || true
+            echo "Sofia parada."
+          fi
