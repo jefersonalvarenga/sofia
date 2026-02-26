@@ -38,6 +38,12 @@ def load_session(remote_jid: str, clinic_id: str,
         if map_result.data:
             clinic_id = map_result.data["clinic_id"]
 
+    if not clinic_id or clinic_id == "unknown":
+        raise ValueError(
+            f"Unresolvable clinic_id for remote_jid='{remote_jid}' instance_id='{instance_id}'. "
+            "Verify instance_clinic_map entry and n8n clinic_id configuration."
+        )
+
     phone = _phone_from_jid(remote_jid)
     session_id = f"{remote_jid}:{clinic_id}"
 
@@ -172,15 +178,18 @@ def save_session(state: SofiaState) -> None:
 
     # 2. Insert agent activation audit
     if state.get("agent_name"):
-        from app.core.config import get_settings
-        sofia_version = get_settings().sofia_version
-        supabase.table("sf_agent_activations").insert(
-            {
-                "session_id": state["session_id"],
-                "agent_name": state["agent_name"],
-                "triggered_by": state.get("intent"),
-                "reasoning": state.get("reasoning"),
-                "processing_ms": state.get("processing_time_ms"),
-                "sofia_version": sofia_version,
-            }
-        ).execute()
+        try:
+            from app.core.config import get_settings
+            sofia_version = get_settings().sofia_version
+            supabase.table("sf_agent_activations").insert(
+                {
+                    "session_id": state["session_id"],
+                    "agent_name": state["agent_name"],
+                    "triggered_by": state.get("intent"),
+                    "reasoning": state.get("reasoning"),
+                    "processing_ms": state.get("processing_time_ms"),
+                    "sofia_version": sofia_version,
+                }
+            ).execute()
+        except Exception as e:
+            print(f"[save_session] sf_agent_activations insert failed: {e}")
