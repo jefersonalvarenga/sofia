@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// ============================================\n// Parse Evolution API inbound message\n// Filters: own messages, groups, unsupported types\n// ============================================\n\nconst body = $input.first().json.body || $input.first().json;\n\nconst messages = body.data?.messages || body.messages || [];\nconst message = messages[0] || body.data || body;\n\nconst key = message.key || {};\nconst remoteJid = key.remoteJid || message.remoteJid || '';\nconst fromMe = key.fromMe || false;\nconst wamid = key.id || message.id || '';\nconst pushName = message.pushName || '';\nconst instanceName = body.instance || body.instanceName || '';\n\nif (fromMe) return [{ json: { ignore: true, reason: 'from_me' } }];\nif (remoteJid.includes('@g.us')) return [{ json: { ignore: true, reason: 'group_message' } }];\nif (remoteJid === 'status@broadcast') return [{ json: { ignore: true, reason: 'status_broadcast' } }];\n\nconst msgContent = message.message || {};\nlet messageContent = '';\nlet messageType = 'unsupported';\n\nif (msgContent.conversation) {\n  messageContent = msgContent.conversation;\n  messageType = 'text';\n} else if (msgContent.extendedTextMessage?.text) {\n  messageContent = msgContent.extendedTextMessage.text;\n  messageType = 'text';\n} else if (msgContent.imageMessage?.caption) {\n  messageContent = msgContent.imageMessage.caption;\n  messageType = 'image';\n} else if (msgContent.audioMessage) {\n  messageContent = '[Áudio]';\n  messageType = 'audio';\n} else if (msgContent.documentMessage?.caption) {\n  messageContent = msgContent.documentMessage.caption;\n  messageType = 'document';\n}\n\nif (!messageContent) return [{ json: { ignore: true, reason: 'no_text_content', messageType } }];\n\nreturn [{\n  json: {\n    ignore: false,\n    remoteJid,\n    pushName,\n    wamid,\n    messageContent,\n    messageType,\n    instanceName,\n    phone: remoteJid.split('@')[0]\n  }\n}];"
+        "jsCode": "// ============================================\n// Parse Evolution API inbound message\n// Filters: own messages, groups, unsupported types\n// ============================================\n\nconst body = $input.first().json.body || $input.first().json;\n\nconst messages = body.data?.messages || body.messages || [];\nconst message = messages[0] || body.data || body;\n\nconst key = message.key || {};\nconst remoteJid = key.remoteJid || message.remoteJid || '';\nconst fromMe = key.fromMe || false;\nconst wamid = key.id || message.id || '';\nconst pushName = message.pushName || '';\nconst instanceName = body.instance || body.instanceName || '';\n\nif (fromMe) return [{ json: { ignore: true, reason: 'from_me' } }];\nif (remoteJid.includes('@g.us')) return [{ json: { ignore: true, reason: 'group_message' } }];\nif (remoteJid === 'status@broadcast') return [{ json: { ignore: true, reason: 'status_broadcast' } }];\n\nconst msgContent = message.message || {};\nlet messageContent = '';\nlet messageType = 'unsupported';\n\nif (msgContent.conversation) {\n  messageContent = msgContent.conversation;\n  messageType = 'text';\n} else if (msgContent.extendedTextMessage?.text) {\n  messageContent = msgContent.extendedTextMessage.text;\n  messageType = 'text';\n} else if (msgContent.imageMessage?.caption) {\n  messageContent = msgContent.imageMessage.caption;\n  messageType = 'image';\n} else if (msgContent.audioMessage) {\n  messageContent = '[Áudio]';\n  messageType = 'audio';\n} else if (msgContent.documentMessage?.caption) {\n  messageContent = msgContent.documentMessage.caption;\n  messageType = 'document';\n}\n\nif (!messageContent) return [{ json: { ignore: true, reason: 'no_text_content', messageType } }];\n\n// Extract attribution ref code (e.g. \"Ref: W8F\" or \"ref:W8F\" or \"REF W8F\")\nlet refCode = null;\nconst refMatch = messageContent.match(/[Rr][Ee][Ff][:\\s]+([A-Z0-9]{3})\\b/i);\nif (refMatch) refCode = refMatch[1].toUpperCase();\n\nreturn [{\n  json: {\n    ignore: false,\n    remoteJid,\n    pushName,\n    wamid,\n    messageContent,\n    messageType,\n    instanceName,\n    phone: remoteJid.split('@')[0],\n    refCode\n  }\n}];"
       },
       "id": "parse-evolution-payload",
       "name": "Parse Evolution Payload",
@@ -87,6 +87,30 @@
     },
     {
       "parameters": {
+        "operation": "executeQuery",
+        "query": "=-- Resolve ref code → attribution_id and mark click as contacted\n-- Returns empty if refCode is null/unknown or already resolved\nWITH click AS (\n  SELECT id FROM public.sf_ad_clicks\n  WHERE ref_code = NULLIF('{{ $json.refCode }}', 'null')\n    AND clinic_id = NULLIF('{{ $json.clinicId }}', 'null')\n    AND expires_at > NOW()\n    AND resolved = FALSE\n  LIMIT 1\n)\nUPDATE public.sf_ad_clicks\nSET resolved = TRUE,\n    resolved_at = NOW(),\n    resolved_jid = '{{ $json.remoteJid }}'\nWHERE id = (SELECT id FROM click)\nRETURNING id AS attribution_id",
+        "options": {}
+      },
+      "id": "resolver-attribution",
+      "name": "Resolver Attribution",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1360, 300],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge attribution_id from Postgres result back into the main data item\nconst attrRows = $input.all();\nconst slotsData = $('Buscar Slots Disponíveis').first().json;\n\n// attribution_id is the resolved UUID (or null for organic contacts)\nconst attributionId = (attrRows.length > 0 && attrRows[0].json?.attribution_id)\n  ? attrRows[0].json.attribution_id\n  : null;\n\nreturn [{\n  json: {\n    ...slotsData,\n    attributionId\n  }\n}];"
+      },
+      "id": "merge-attribution",
+      "name": "Merge Attribution Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1580, 300]
+    },
+    {
+      "parameters": {
         "conditions": {
           "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
           "conditions": [
@@ -105,7 +129,7 @@
       "name": "É Comando Reset?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1140, 480]
+      "position": [1800, 300]
     },
     {
       "parameters": {
@@ -117,7 +141,7 @@
       "name": "Limpar Sessão",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1360, 480],
+      "position": [2020, 480],
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -131,7 +155,7 @@
       "name": "Limpar Customer",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1580, 480],
+      "position": [2240, 480],
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -145,7 +169,7 @@
       "name": "Limpar Appointments",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1800, 480],
+      "position": [2460, 480],
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -162,7 +186,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  instance_id: $json.instanceName,\n  clinic_id: $json.clinicId || 'unknown',\n  remote_jid: $json.remoteJid,\n  push_name: $json.pushName,\n  message: $json.messageContent,\n  message_type: $json.messageType,\n  wamid: $json.wamid,\n  available_slots: $json.availableSlots || [],\n  conversation_type: 'first_contact'\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  instance_id: $json.instanceName,\n  clinic_id: $json.clinicId || 'unknown',\n  remote_jid: $json.remoteJid,\n  push_name: $json.pushName,\n  message: $json.messageContent,\n  message_type: $json.messageType,\n  wamid: $json.wamid,\n  available_slots: $json.availableSlots || [],\n  conversation_type: 'first_contact',\n  attribution_id: $json.attributionId || null\n}) }}",
         "options": {
           "timeout": 30000,
           "response": { "response": { "fullResponse": true, "responseFormat": "json" } }
@@ -175,7 +199,7 @@
       "name": "Chamar Sofia API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1360, 300]
+      "position": [2020, 300]
     },
     {
       "parameters": {
@@ -185,7 +209,39 @@
       "name": "Parse Sofia Response v2",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1580, 300]
+      "position": [2240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Detect if Sofia confirmed a new appointment and fire conversion upload\n// Runs once against the raw Sofia API response (before fan-out per message)\n\nconst response = $('Chamar Sofia API').first().json;\nconst body = response.body || response;\nconst agentRuns = body.agent_runs || [];\n\n// Look for a Scheduler run that produced a booked appointment\nconst bookingRun = agentRuns.find(r => r.data?.type === 'appointment' && r.data?.chosen_slot);\nif (!bookingRun) return [];  // no booking — stop this branch silently\n\nconst attributionId = $('Merge Attribution Data').first().json.attributionId;\nif (!attributionId) return [];  // organic contact — no conversion to upload\n\nconst clinicId = $('Merge Attribution Data').first().json.clinicId;\n\nreturn [{\n  json: {\n    conversion_type: 'appointment',\n    attribution_id: attributionId,\n    clinic_id: clinicId,\n    service_name: bookingRun.data.service || '',\n    scheduled_at: bookingRun.data.chosen_slot,\n    conversion_value_brl: 0  // conversion uploader fetches avg_ticket from sf_clinic_profiles\n  }\n}];"
+      },
+      "id": "detectar-conversao",
+      "name": "Detectar Conversão",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2240, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://n8n.easyscale.co/webhook/sofia-conversion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 10000 },
+        "onError": "continueRegularOutput"
+      },
+      "id": "trigger-conversion-upload",
+      "name": "Trigger Conversion Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2460, 480]
     },
     {
       "parameters": {
@@ -207,7 +263,7 @@
       "name": "Verificar should_send",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1800, 200]
+      "position": [2460, 200]
     },
     {
       "parameters": {
@@ -253,7 +309,7 @@
       "name": "Switch - Tipo Mensagem",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [2020, 200]
+      "position": [2680, 200]
     },
     {
       "parameters": {
@@ -278,7 +334,7 @@
       "name": "Enviar Texto",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2240, 120]
+      "position": [2900, 120]
     },
     {
       "parameters": {
@@ -300,7 +356,7 @@
       "name": "Verificar requires_human",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1800, 420]
+      "position": [2460, 360]
     },
     {
       "parameters": {
@@ -312,7 +368,7 @@
       "name": "Pausar Sofia",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2020, 420],
+      "position": [2680, 360],
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -326,7 +382,7 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [2460, 300]
+      "position": [3120, 300]
     },
     {
       "parameters": {
@@ -350,7 +406,7 @@
       "name": "Respond - Reset OK",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [2020, 560]
+      "position": [2680, 560]
     }
   ],
   "connections": {
@@ -373,6 +429,12 @@
       "main": [[{ "node": "Buscar Slots Disponíveis", "type": "main", "index": 0 }]]
     },
     "Buscar Slots Disponíveis": {
+      "main": [[{ "node": "Resolver Attribution", "type": "main", "index": 0 }]]
+    },
+    "Resolver Attribution": {
+      "main": [[{ "node": "Merge Attribution Data", "type": "main", "index": 0 }]]
+    },
+    "Merge Attribution Data": {
       "main": [[{ "node": "É Comando Reset?", "type": "main", "index": 0 }]]
     },
     "É Comando Reset?": {
@@ -391,13 +453,19 @@
       "main": [[{ "node": "Respond - Reset OK", "type": "main", "index": 0 }]]
     },
     "Chamar Sofia API": {
-      "main": [[{ "node": "Parse Sofia Response v2", "type": "main", "index": 0 }]]
+      "main": [[
+        { "node": "Parse Sofia Response v2", "type": "main", "index": 0 },
+        { "node": "Detectar Conversão", "type": "main", "index": 0 }
+      ]]
     },
     "Parse Sofia Response v2": {
       "main": [[
         { "node": "Verificar should_send", "type": "main", "index": 0 },
         { "node": "Verificar requires_human", "type": "main", "index": 0 }
       ]]
+    },
+    "Detectar Conversão": {
+      "main": [[{ "node": "Trigger Conversion Upload", "type": "main", "index": 0 }]]
     },
     "Verificar should_send": {
       "main": [

@@ -1,0 +1,294 @@
+{
+  "name": "Sofia - Conversion Uploader (Google Ads + Meta)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sofia-conversion",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-conversion",
+      "name": "Webhook - Sofia Conversion",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "sofia-conversion"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT\n  ac.id              AS click_id,\n  ac.gclid,\n  ac.fbclid,\n  ac.resolved_jid,\n  ac.clicked_at,\n  ac.conversion_uploaded_at,\n  aa.google_ads_enabled,\n  aa.google_ads_customer_id,\n  aa.google_ads_developer_token,\n  aa.google_ads_refresh_token,\n  aa.google_conversion_action_appointment,\n  aa.meta_enabled,\n  aa.meta_pixel_id,\n  aa.meta_access_token,\n  aa.meta_test_event_code\nFROM public.sf_ad_clicks ac\nJOIN public.sf_clinic_ad_accounts aa ON aa.clinic_id = ac.clinic_id\nWHERE ac.id = '{{ $json.body.attribution_id }}'",
+        "options": {}
+      },
+      "id": "buscar-attribution-e-contas",
+      "name": "Buscar Attribution + Ad Accounts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [480, 300],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge Postgres result with webhook body\nconst dbRows = $input.all();\nconst body = $('Webhook - Sofia Conversion').first().json.body || {};\n\nif (!dbRows.length || !dbRows[0].json?.click_id) {\n  return [{ json: { valid: false, reason: 'attribution_not_found' } }];\n}\n\nconst db = dbRows[0].json;\n\n// Skip if already uploaded (idempotency guard)\nif (db.conversion_uploaded_at) {\n  return [{ json: { valid: false, reason: 'already_uploaded', click_id: db.click_id } }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    // From webhook body\n    conversion_type: body.conversion_type || 'appointment',\n    attribution_id: body.attribution_id,\n    clinic_id: body.clinic_id,\n    service_name: body.service_name || '',\n    scheduled_at: body.scheduled_at || new Date().toISOString(),\n    conversion_value_brl: parseFloat(body.conversion_value_brl) || 0,\n    // From DB\n    click_id: db.click_id,\n    gclid: db.gclid,\n    fbclid: db.fbclid,\n    resolved_jid: db.resolved_jid,\n    clicked_at: db.clicked_at,\n    // Google Ads\n    google_ads_enabled: db.google_ads_enabled === true,\n    google_ads_customer_id: db.google_ads_customer_id,\n    google_ads_developer_token: db.google_ads_developer_token,\n    google_ads_refresh_token: db.google_ads_refresh_token,\n    google_conversion_action_appointment: db.google_conversion_action_appointment,\n    // Meta\n    meta_enabled: db.meta_enabled === true,\n    meta_pixel_id: db.meta_pixel_id,\n    meta_access_token: db.meta_access_token,\n    meta_test_event_code: db.meta_test_event_code\n  }\n}];"
+      },
+      "id": "montar-payload",
+      "name": "Montar Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "payload-valido",
+      "name": "Payload Válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ skipped: true, reason: $json.reason || 'invalid' }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-skip",
+      "name": "Respond - Skip",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-google",
+              "leftValue": "={{ $json.google_ads_enabled && $json.gclid }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "google-ads-ativo",
+      "name": "Google Ads Ativo + gclid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://oauth2.googleapis.com/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/x-www-form-urlencoded" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "=grant_type=refresh_token&client_id={{ $env.GOOGLE_ADS_CLIENT_ID }}&client_secret={{ $env.GOOGLE_ADS_CLIENT_SECRET }}&refresh_token={{ $json.google_ads_refresh_token }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "refresh-oauth-token",
+      "name": "Refresh OAuth Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge access_token from OAuth response back with main payload\nconst oauthResp = $input.first().json;\nconst payload = $('Montar Payload').first().json;\n\nconst accessToken = oauthResp.access_token || oauthResp.body?.access_token || '';\n\n// Format conversion datetime: Google requires 'yyyy-MM-dd HH:mm:ssZ'\nconst dt = new Date(payload.scheduled_at);\nconst pad = n => String(n).padStart(2, '0');\nconst conversionDateTime =\n  `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ` +\n  `${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}+0000`;\n\nreturn [{\n  json: {\n    ...payload,\n    google_access_token: accessToken,\n    conversion_date_time: conversionDateTime\n  }\n}];"
+      },
+      "id": "preparar-google-payload",
+      "name": "Preparar Google Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1580, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://googleads.googleapis.com/v14/customers/{{ $json.google_ads_customer_id.replace(/-/g, '') }}/googleAds:uploadClickConversions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $json.google_access_token }}" },
+            { "name": "developer-token", "value": "={{ $json.google_ads_developer_token }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  conversions: [{\n    gclid: $json.gclid,\n    conversionAction: `customers/${$json.google_ads_customer_id.replace(/-/g,'')}/conversionActions/${$json.google_conversion_action_appointment}`,\n    conversionDateTime: $json.conversion_date_time,\n    conversionValue: $json.conversion_value_brl,\n    currencyCode: 'BRL'\n  }],\n  partialFailure: true\n}) }}",
+        "options": { "timeout": 15000 },
+        "onError": "continueRegularOutput"
+      },
+      "id": "upload-google-conversion",
+      "name": "Upload Google Offline Conversion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1800, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-meta",
+              "leftValue": "={{ $('Montar Payload').first().json.meta_enabled && $('Montar Payload').first().json.fbclid }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "meta-ativo",
+      "name": "Meta Ativo + fbclid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1140, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hash phone number (E.164 digits only) with SHA256 for Meta CAPI\nconst payload = $('Montar Payload').first().json;\nconst crypto = require('crypto');\n\nconst jid = payload.resolved_jid || '';\nconst phone = jid.split('@')[0].replace(/\\D/g, '');\nconst hashedPhone = phone ? crypto.createHash('sha256').update(phone).digest('hex') : '';\n\nconst eventTimeUnix = Math.floor(new Date(payload.scheduled_at).getTime() / 1000);\n\nreturn [{\n  json: {\n    ...payload,\n    hashed_phone: hashedPhone,\n    event_time: eventTimeUnix\n  }\n}];"
+      },
+      "id": "hash-telefone",
+      "name": "Hash Telefone (SHA256)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1360, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.meta_pixel_id }}/events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  data: [{\n    event_name: 'Schedule',\n    event_time: $json.event_time,\n    user_data: {\n      ph: [$json.hashed_phone].filter(Boolean)\n    },\n    custom_data: {\n      value: $json.conversion_value_brl,\n      currency: 'BRL',\n      content_name: $json.service_name\n    },\n    action_source: 'other'\n  }],\n  access_token: $json.meta_access_token,\n  test_event_code: $json.meta_test_event_code || undefined\n}) }}",
+        "options": { "timeout": 15000 },
+        "onError": "continueRegularOutput"
+      },
+      "id": "send-meta-event",
+      "name": "Send Meta Conversions API Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE public.sf_ad_clicks\nSET conversion_uploaded_at = NOW()\nWHERE id = '{{ $('Montar Payload').first().json.click_id }}'",
+        "options": {}
+      },
+      "id": "marcar-uploaded",
+      "name": "Marcar conversion_uploaded_at",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2020, 350],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, click_id: $('Montar Payload').first().json.click_id, google_uploaded: $('Montar Payload').first().json.google_ads_enabled && !!$('Montar Payload').first().json.gclid, meta_uploaded: $('Montar Payload').first().json.meta_enabled && !!$('Montar Payload').first().json.fbclid }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2240, 350]
+    }
+  ],
+  "connections": {
+    "Webhook - Sofia Conversion": {
+      "main": [[{ "node": "Buscar Attribution + Ad Accounts", "type": "main", "index": 0 }]]
+    },
+    "Buscar Attribution + Ad Accounts": {
+      "main": [[{ "node": "Montar Payload", "type": "main", "index": 0 }]]
+    },
+    "Montar Payload": {
+      "main": [[{ "node": "Payload Válido?", "type": "main", "index": 0 }]]
+    },
+    "Payload Válido?": {
+      "main": [
+        [
+          { "node": "Google Ads Ativo + gclid?", "type": "main", "index": 0 },
+          { "node": "Meta Ativo + fbclid?", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Respond - Skip", "type": "main", "index": 0 }]
+      ]
+    },
+    "Google Ads Ativo + gclid?": {
+      "main": [
+        [{ "node": "Refresh OAuth Token", "type": "main", "index": 0 }],
+        [{ "node": "Marcar conversion_uploaded_at", "type": "main", "index": 0 }]
+      ]
+    },
+    "Refresh OAuth Token": {
+      "main": [[{ "node": "Preparar Google Payload", "type": "main", "index": 0 }]]
+    },
+    "Preparar Google Payload": {
+      "main": [[{ "node": "Upload Google Offline Conversion", "type": "main", "index": 0 }]]
+    },
+    "Upload Google Offline Conversion": {
+      "main": [[{ "node": "Marcar conversion_uploaded_at", "type": "main", "index": 0 }]]
+    },
+    "Meta Ativo + fbclid?": {
+      "main": [
+        [{ "node": "Hash Telefone (SHA256)", "type": "main", "index": 0 }],
+        [{ "node": "Marcar conversion_uploaded_at", "type": "main", "index": 0 }]
+      ]
+    },
+    "Hash Telefone (SHA256)": {
+      "main": [[{ "node": "Send Meta Conversions API Event", "type": "main", "index": 0 }]]
+    },
+    "Send Meta Conversions API Event": {
+      "main": [[{ "node": "Marcar conversion_uploaded_at", "type": "main", "index": 0 }]]
+    },
+    "Marcar conversion_uploaded_at": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "executionTimeout": 60,
+    "timezone": "America/Sao_Paulo"
+  },
+  "tags": [
+    { "name": "Sofia", "id": "10" },
+    { "name": "Marketing", "id": "20" }
+  ]
+}

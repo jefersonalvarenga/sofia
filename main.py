@@ -97,6 +97,7 @@ async def sofia_endpoint(request: SofiaRequest):
             "wamid":             request.wamid,
             "available_slots":   request.available_slots,
             "conversation_type": request.conversation_type,
+            "attribution_id":    request.attribution_id,
             # ---- Observability ----
             "trace_id":          trace_id,
             "language":          "pt-BR",   # overwritten by Router

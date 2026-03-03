@@ -70,6 +70,9 @@ class SofiaState(TypedDict):
     # ---- Routing ----
     detected_intents: List[str]      # sorted: informational first, CTA (most important) last
 
+    # ---- Marketing Attribution ----
+    attribution_id: Optional[str]    # UUID from sf_ad_clicks (None for organic)
+
     # ---- Agent outputs ----
     agent_runs: List[AgentRun]
     requires_human: bool             # convenience flag derived from agent_runs
@@ -94,6 +97,10 @@ class SofiaRequest(BaseModel):
     conversation_type: str = Field(
         default="first_contact",
         description="Tipo de conversa: first_contact | confirmation | reminder | reengage | upsell"
+    )
+    attribution_id: Optional[str] = Field(
+        None,
+        description="UUID do sf_ad_clicks resolvido pelo n8n (null para contatos orgânicos)"
     )
 
 

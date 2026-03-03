@@ -16,7 +16,8 @@ def _phone_from_jid(remote_jid: str) -> str:
 
 def load_session(remote_jid: str, clinic_id: str,
                  push_name: Optional[str] = None,
-                 instance_id: str = "") -> Dict[str, Any]:
+                 instance_id: str = "",
+                 attribution_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Load or create a Sofia session for the given patient + clinic.
     Returns session context only — services/rules loaded lazily by agents.
@@ -60,6 +61,15 @@ def load_session(remote_jid: str, clinic_id: str,
     customer_id = None
     if customer_result.data:
         customer_id = customer_result.data[0].get("id")
+
+    # First-touch attribution: write only once per customer (never overwrite)
+    if attribution_id and customer_id:
+        try:
+            supabase.table("sf_customers").update(
+                {"first_attribution_id": attribution_id}
+            ).eq("id", customer_id).is_("first_attribution_id", "null").execute()
+        except Exception:
+            pass  # best-effort, never block the conversation
 
     # 2. Load or create session
     session_result = (
@@ -112,6 +122,7 @@ def load_session(remote_jid: str, clinic_id: str,
         "patient_name": patient_name,
         "clinic_name": clinic_name,
         "assistant_name": assistant_name,
+        "attribution_id": attribution_id,  # passed through state to _persist_appointment
     }
 
 
@@ -190,6 +201,7 @@ def _persist_appointment(data: Dict[str, Any], state: SofiaState) -> None:
             "scheduled_at": chosen_slot,
             "status": "scheduled",
             "source": "sofia",
+            "attribution_id": state.get("attribution_id"),  # null for organic contacts
         }).execute()
     except Exception as e:
         print(f"[persist_appointment] Error: {e}")

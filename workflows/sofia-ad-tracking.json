@@ -1,0 +1,354 @@
+{
+  "name": "Sofia - Ad Click Tracking (Landing Page)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ad-track",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-ad-track",
+      "name": "Webhook - Ad Track",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "ad-track"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate query params\n// Expected: clinic_id, gclid?, fbclid?, utm_source?, utm_medium?, utm_campaign?, utm_content?, utm_term?, landing_page?\n\nconst qs = $input.first().json.query || {};\nconst body = $input.first().json.body || {};\n\n// Params can arrive as query string or body\nconst p = { ...qs, ...body };\n\nconst clinicId = p.clinic_id || null;\nconst gclid = p.gclid || null;\nconst fbclid = p.fbclid || null;\nconst utmSource = p.utm_source || null;\nconst utmMedium = p.utm_medium || null;\nconst utmCampaign = p.utm_campaign || null;\nconst utmContent = p.utm_content || null;\nconst utmTerm = p.utm_term || null;\nconst landingPage = p.landing_page || null;\n\nif (!clinicId) {\n  return [{ json: { valid: false, error: 'clinic_id is required' } }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    clinicId,\n    gclid,\n    fbclid,\n    utmSource,\n    utmMedium,\n    utmCampaign,\n    utmContent,\n    utmTerm,\n    landingPage\n  }\n}];"
+      },
+      "id": "extrair-params",
+      "name": "Extrair Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "validar-params",
+      "name": "Params Válidos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.error || 'invalid_request' }) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "respond-400",
+      "name": "Respond 400 - Params Inválidos",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [700, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT id, ref_code, expires_at\nFROM public.sf_ad_clicks\nWHERE clinic_id = '{{ $json.clinicId }}'\n  AND expires_at > NOW()\n  AND (\n    ({{ $json.gclid !== null ? 'TRUE' : 'FALSE' }} AND gclid = NULLIF('{{ $json.gclid }}', 'null'))\n    OR\n    ({{ $json.fbclid !== null ? 'TRUE' : 'FALSE' }} AND fbclid = NULLIF('{{ $json.fbclid }}', 'null'))\n  )\nLIMIT 1",
+        "options": {}
+      },
+      "id": "dedup-check",
+      "name": "Dedup Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [920, 300],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if dedup query returned an existing active click\nconst rows = $input.all();\nconst params = $('Extrair Params').first().json;\n\nif (rows.length > 0 && rows[0].json?.id) {\n  const existing = rows[0].json;\n  return [{\n    json: {\n      ...params,\n      hasExisting: true,\n      existingId: existing.id,\n      existingRefCode: existing.ref_code,\n      existingExpiresAt: existing.expires_at\n    }\n  }];\n}\n\n// No existing click — generate 3 candidate ref codes [A-Z0-9]\nconst CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';\nconst genCode = () => Array.from({ length: 3 }, () => CHARS[Math.floor(Math.random() * CHARS.length)]).join('');\n\nreturn [{\n  json: {\n    ...params,\n    hasExisting: false,\n    candidates: [genCode(), genCode(), genCode()]  // 3 tries on conflict\n  }\n}];"
+      },
+      "id": "avaliar-dedup",
+      "name": "Avaliar Dedup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-existing",
+              "leftValue": "={{ $json.hasExisting }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ja-tem-codigo",
+      "name": "Já Tem Código?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ref_code: $json.existingRefCode, attribution_id: $json.existingId, expires_at: $json.existingExpiresAt, reused: true }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-existing",
+      "name": "Respond - Código Existente",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1580, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=-- Try inserting with first candidate; ON CONFLICT DO NOTHING skips quietly\n-- Returns row if successful, empty if collision\nINSERT INTO public.sf_ad_clicks (\n  clinic_id, ref_code, gclid, fbclid,\n  utm_source, utm_medium, utm_campaign, utm_content, utm_term, landing_page\n)\nVALUES (\n  '{{ $json.clinicId }}',\n  '{{ $json.candidates[0] }}',\n  NULLIF('{{ $json.gclid }}', 'null'),\n  NULLIF('{{ $json.fbclid }}', 'null'),\n  NULLIF('{{ $json.utmSource }}', 'null'),\n  NULLIF('{{ $json.utmMedium }}', 'null'),\n  NULLIF('{{ $json.utmCampaign }}', 'null'),\n  NULLIF('{{ $json.utmContent }}', 'null'),\n  NULLIF('{{ $json.utmTerm }}', 'null'),\n  NULLIF('{{ $json.landingPage }}', 'null')\n)\nON CONFLICT (clinic_id, ref_code) DO NOTHING\nRETURNING id, ref_code, expires_at",
+        "options": {}
+      },
+      "id": "inserir-clique-1",
+      "name": "Inserir Clique (tentativa 1)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1580, 400],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge result from insert attempt 1 with original params\nconst insertRows = $input.all();\nconst params = $('Avaliar Dedup').first().json;\n\nif (insertRows.length > 0 && insertRows[0].json?.id) {\n  const row = insertRows[0].json;\n  return [{ json: { success: true, id: row.id, ref_code: row.ref_code, expires_at: row.expires_at, ...params } }];\n}\n\n// Collision on candidate[0] — try candidate[1]\nreturn [{ json: { success: false, ...params } }];"
+      },
+      "id": "avaliar-tentativa-1",
+      "name": "Avaliar Tentativa 1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-t1",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "sucesso-t1",
+      "name": "Sucesso T1?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2020, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO public.sf_ad_clicks (\n  clinic_id, ref_code, gclid, fbclid,\n  utm_source, utm_medium, utm_campaign, utm_content, utm_term, landing_page\n)\nVALUES (\n  '{{ $json.clinicId }}',\n  '{{ $json.candidates[1] }}',\n  NULLIF('{{ $json.gclid }}', 'null'),\n  NULLIF('{{ $json.fbclid }}', 'null'),\n  NULLIF('{{ $json.utmSource }}', 'null'),\n  NULLIF('{{ $json.utmMedium }}', 'null'),\n  NULLIF('{{ $json.utmCampaign }}', 'null'),\n  NULLIF('{{ $json.utmContent }}', 'null'),\n  NULLIF('{{ $json.utmTerm }}', 'null'),\n  NULLIF('{{ $json.landingPage }}', 'null')\n)\nON CONFLICT (clinic_id, ref_code) DO NOTHING\nRETURNING id, ref_code, expires_at",
+        "options": {}
+      },
+      "id": "inserir-clique-2",
+      "name": "Inserir Clique (tentativa 2)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2240, 500],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge result from insert attempt 2 with params\nconst insertRows = $input.all();\nconst params = $('Avaliar Tentativa 1').first().json;\n\nif (insertRows.length > 0 && insertRows[0].json?.id) {\n  const row = insertRows[0].json;\n  return [{ json: { success: true, id: row.id, ref_code: row.ref_code, expires_at: row.expires_at, ...params } }];\n}\n\n// Still collision — try candidate[2]\nreturn [{ json: { success: false, ...params } }];"
+      },
+      "id": "avaliar-tentativa-2",
+      "name": "Avaliar Tentativa 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2460, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-t2",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "sucesso-t2",
+      "name": "Sucesso T2?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2680, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO public.sf_ad_clicks (\n  clinic_id, ref_code, gclid, fbclid,\n  utm_source, utm_medium, utm_campaign, utm_content, utm_term, landing_page\n)\nVALUES (\n  '{{ $json.clinicId }}',\n  '{{ $json.candidates[2] }}',\n  NULLIF('{{ $json.gclid }}', 'null'),\n  NULLIF('{{ $json.fbclid }}', 'null'),\n  NULLIF('{{ $json.utmSource }}', 'null'),\n  NULLIF('{{ $json.utmMedium }}', 'null'),\n  NULLIF('{{ $json.utmCampaign }}', 'null'),\n  NULLIF('{{ $json.utmContent }}', 'null'),\n  NULLIF('{{ $json.utmTerm }}', 'null'),\n  NULLIF('{{ $json.landingPage }}', 'null')\n)\nON CONFLICT (clinic_id, ref_code) DO NOTHING\nRETURNING id, ref_code, expires_at",
+        "options": {}
+      },
+      "id": "inserir-clique-3",
+      "name": "Inserir Clique (tentativa 3)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2900, 600],
+      "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Final merge — use whatever row was returned (or fail)\nconst insertRows = $input.all();\n\nif (insertRows.length > 0 && insertRows[0].json?.id) {\n  const row = insertRows[0].json;\n  return [{ json: { success: true, id: row.id, ref_code: row.ref_code, expires_at: row.expires_at } }];\n}\n\n// All 3 candidates collided (extremely unlikely)\nreturn [{ json: { success: false } }];"
+      },
+      "id": "avaliar-tentativa-3",
+      "name": "Avaliar Tentativa 3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3120, 600]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ref_code: $json.ref_code, attribution_id: $json.id, expires_at: $json.expires_at }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-200-t1",
+      "name": "Respond 200 - T1",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2240, 380]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ref_code: $json.ref_code, attribution_id: $json.id, expires_at: $json.expires_at }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-200-t2",
+      "name": "Respond 200 - T2",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2900, 480]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ref_code: $json.ref_code, attribution_id: $json.id, expires_at: $json.expires_at }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-200-t3",
+      "name": "Respond 200 - T3",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3340, 580]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'ref_code_collision', message: 'All 3 code candidates were taken. Retry request.' }) }}",
+        "options": { "responseCode": 503 }
+      },
+      "id": "respond-503",
+      "name": "Respond 503 - Colisão",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3340, 700]
+    }
+  ],
+  "connections": {
+    "Webhook - Ad Track": {
+      "main": [[{ "node": "Extrair Params", "type": "main", "index": 0 }]]
+    },
+    "Extrair Params": {
+      "main": [[{ "node": "Params Válidos?", "type": "main", "index": 0 }]]
+    },
+    "Params Válidos?": {
+      "main": [
+        [{ "node": "Dedup Check", "type": "main", "index": 0 }],
+        [{ "node": "Respond 400 - Params Inválidos", "type": "main", "index": 0 }]
+      ]
+    },
+    "Dedup Check": {
+      "main": [[{ "node": "Avaliar Dedup", "type": "main", "index": 0 }]]
+    },
+    "Avaliar Dedup": {
+      "main": [[{ "node": "Já Tem Código?", "type": "main", "index": 0 }]]
+    },
+    "Já Tem Código?": {
+      "main": [
+        [{ "node": "Respond - Código Existente", "type": "main", "index": 0 }],
+        [{ "node": "Inserir Clique (tentativa 1)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Inserir Clique (tentativa 1)": {
+      "main": [[{ "node": "Avaliar Tentativa 1", "type": "main", "index": 0 }]]
+    },
+    "Avaliar Tentativa 1": {
+      "main": [[{ "node": "Sucesso T1?", "type": "main", "index": 0 }]]
+    },
+    "Sucesso T1?": {
+      "main": [
+        [{ "node": "Respond 200 - T1", "type": "main", "index": 0 }],
+        [{ "node": "Inserir Clique (tentativa 2)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Inserir Clique (tentativa 2)": {
+      "main": [[{ "node": "Avaliar Tentativa 2", "type": "main", "index": 0 }]]
+    },
+    "Avaliar Tentativa 2": {
+      "main": [[{ "node": "Sucesso T2?", "type": "main", "index": 0 }]]
+    },
+    "Sucesso T2?": {
+      "main": [
+        [{ "node": "Respond 200 - T2", "type": "main", "index": 0 }],
+        [{ "node": "Inserir Clique (tentativa 3)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Inserir Clique (tentativa 3)": {
+      "main": [[{ "node": "Avaliar Tentativa 3", "type": "main", "index": 0 }]]
+    },
+    "Avaliar Tentativa 3": {
+      "main": [
+        [{ "node": "Respond 200 - T3", "type": "main", "index": 0 }],
+        [{ "node": "Respond 503 - Colisão", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "executionTimeout": 30,
+    "timezone": "America/Sao_Paulo"
+  },
+  "tags": [
+    { "name": "Sofia", "id": "10" },
+    { "name": "Marketing", "id": "20" }
+  ]
+}

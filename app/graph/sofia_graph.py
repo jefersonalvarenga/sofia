@@ -135,6 +135,7 @@ def node_load_context(state: SofiaState) -> dict:
             clinic_id=state["clinic_id"],
             push_name=state.get("push_name"),
             instance_id=state.get("instance_id", ""),
+            attribution_id=state.get("attribution_id"),
         )
         return ctx
     except Exception as e:
