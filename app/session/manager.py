@@ -72,11 +72,14 @@ def load_session(remote_jid: str, clinic_id: str,
             pass  # best-effort, never block the conversation
 
     # 2. Load or create session
+    # NOTE: .maybe_single() sends Accept: application/vnd.pgrst.object+json which
+    # causes PostgREST to return HTTP 406 when 0 rows match, breaking the flow.
+    # Use .limit(1).execute() instead — returns an empty list safely.
     session_result = (
         supabase.table("sf_sessions")
         .select("session_id, history, conversation_stage")
         .eq("session_id", session_id)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
 
@@ -84,10 +87,11 @@ def load_session(remote_jid: str, clinic_id: str,
     conversation_stage: str = "new"
     patient_name: Optional[str] = push_name
 
-    if session_result.data:
-        raw_history = session_result.data.get("history") or []
+    if session_result.data and len(session_result.data) > 0:
+        row = session_result.data[0]
+        raw_history = row.get("history") or []
         history = raw_history if isinstance(raw_history, list) else []
-        conversation_stage = session_result.data.get("conversation_stage") or "new"
+        conversation_stage = row.get("conversation_stage") or "new"
     else:
         supabase.table("sf_sessions").insert(
             {
