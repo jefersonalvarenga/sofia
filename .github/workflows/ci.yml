@@ -39,6 +39,9 @@ jobs:
       # Score mínimo para passar o job (0.0–1.0)
       MIN_AVG_SCORE: "0.8"
 
+      # GLM-4-flash (ZhipuAI) — meta-evaluator gratuito
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,6 +57,26 @@ jobs:
 
       - name: Run unit tests
         run: pytest tests/ -v --tb=short
+
+      - name: Eval DSPy agents
+        id: eval
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python scripts/eval_agents.py
+
+      - name: Expand eval cases
+        if: always()
+        env:
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GLM_MODEL: glm-4-flash
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python scripts/expand_eval_cases.py --auto-commit
 
       - name: Start Sofia API (background)
         run: |

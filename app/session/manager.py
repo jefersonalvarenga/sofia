@@ -4,7 +4,7 @@ Session Manager — loads and saves Sofia conversation state in Supabase.
 
 import json
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from app.core.supabase_client import get_supabase
 from app.session.models import SofiaState
 
@@ -19,10 +19,7 @@ def load_session(remote_jid: str, clinic_id: str,
                  instance_id: str = "") -> Dict[str, Any]:
     """
     Load or create a Sofia session for the given patient + clinic.
-
-    Returns a partial SofiaState dict with:
-      session_id, customer_id, history, conversation_stage, patient_name,
-      clinic_name, assistant_name, services_context, business_rules
+    Returns session context only — services/rules loaded lazily by agents.
     """
     supabase = get_supabase()
 
@@ -82,7 +79,6 @@ def load_session(remote_jid: str, clinic_id: str,
         history = raw_history if isinstance(raw_history, list) else []
         conversation_stage = session_result.data.get("conversation_stage") or "new"
     else:
-        # Create new session
         supabase.table("sf_sessions").insert(
             {
                 "session_id": session_id,
@@ -97,7 +93,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # 3. Load clinic profile
     clinic_result = (
         supabase.table("sf_clinic_profiles")
-        .select("clinic_name, assistant_name, avg_ticket, address")  # clinic_name added via migration 004
+        .select("clinic_name, assistant_name, avg_ticket, address")
         .eq("clinic_id", clinic_id)
         .maybe_single()
         .execute()
@@ -108,7 +104,20 @@ def load_session(remote_jid: str, clinic_id: str,
         clinic_name = clinic_result.data.get("clinic_name") or "Clínica"
         assistant_name = clinic_result.data.get("assistant_name") or "Sofia"
 
-    # 4. Load services + offers
+    return {
+        "session_id": session_id,
+        "customer_id": customer_id,
+        "history": history,
+        "conversation_stage": conversation_stage,
+        "patient_name": patient_name,
+        "clinic_name": clinic_name,
+        "assistant_name": assistant_name,
+    }
+
+
+def load_services_context(clinic_id: str) -> str:
+    """Load clinic services + active offers. Returns JSON string."""
+    supabase = get_supabase()
     services_result = (
         supabase.table("sf_clinic_services")
         .select("name, description, price")
@@ -122,7 +131,7 @@ def load_session(remote_jid: str, clinic_id: str,
         .eq("is_active", True)
         .execute()
     )
-    services_context = json.dumps(
+    return json.dumps(
         {
             "services": services_result.data or [],
             "offers": offers_result.data or [],
@@ -130,66 +139,144 @@ def load_session(remote_jid: str, clinic_id: str,
         ensure_ascii=False,
     )
 
-    # 5. Load business rules
-    rules_result = (
+
+def load_business_rules(clinic_id: str) -> str:
+    """Load clinic business rules. Returns JSON string."""
+    supabase = get_supabase()
+    result = (
         supabase.table("sf_clinic_business_rules")
         .select("rule_type, content")
         .eq("clinic_id", clinic_id)
         .execute()
     )
-    business_rules = json.dumps(rules_result.data or [], ensure_ascii=False)
+    return json.dumps(result.data or [], ensure_ascii=False)
 
-    return {
-        "session_id": session_id,
-        "customer_id": customer_id,
-        "history": history,
-        "conversation_stage": conversation_stage,
-        "patient_name": patient_name,
-        "clinic_name": clinic_name,
-        "assistant_name": assistant_name,
-        "services_context": services_context,
-        "business_rules": business_rules,
-    }
 
+# ============================================================================
+# Data persisters registry
+# ============================================================================
+
+def _persist_appointment(data: Dict[str, Any], state: SofiaState) -> None:
+    """Insert appointment into sf_appointments. Guards against double booking."""
+    try:
+        supabase = get_supabase()
+        chosen_slot = data.get("chosen_slot")
+        clinic_id = state["clinic_id"]
+
+        if not chosen_slot:
+            return
+
+        existing = (
+            supabase.table("sf_appointments")
+            .select("id")
+            .eq("clinic_id", clinic_id)
+            .eq("scheduled_at", chosen_slot)
+            .neq("status", "cancelled")
+            .neq("status", "no_show")
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            print(f"[persist_appointment] Slot {chosen_slot} already booked, skipping.")
+            return
+
+        supabase.table("sf_appointments").insert({
+            "clinic_id": clinic_id,
+            "customer_id": state.get("customer_id"),
+            "session_id": state.get("session_id"),
+            "remote_jid": state["remote_jid"],
+            "patient_name": state.get("patient_name") or state.get("push_name"),
+            "service_name": data.get("service"),
+            "scheduled_at": chosen_slot,
+            "status": "scheduled",
+            "source": "sofia",
+        }).execute()
+    except Exception as e:
+        print(f"[persist_appointment] Error: {e}")
+
+
+_DATA_PERSISTERS = {
+    "appointment": _persist_appointment,
+}
+
+
+def persist_agent_data(agent_runs: List[Dict[str, Any]], state: SofiaState) -> None:
+    """
+    Loop through agent_runs and dispatch each run's data payload
+    to the appropriate persister. Extensible via _DATA_PERSISTERS registry.
+    """
+    for run in agent_runs:
+        data = run.get("data")
+        if not data:
+            continue
+        persister = _DATA_PERSISTERS.get(data.get("type", ""))
+        if persister:
+            persister(data, state)
+
+
+# ============================================================================
+# Save session
+# ============================================================================
 
 def save_session(state: SofiaState) -> None:
     """
-    Persist session history, conversation rows, and agent activation audit.
+    Persist session history, agent activations audit, and agent data payloads.
     """
     supabase = get_supabase()
+    agent_runs = state.get("agent_runs", [])
 
-    # Build updated history with new human turn + agent response
+    # Build updated history: human turn + each agent's text messages
     new_history = list(state.get("history", []))
     new_history.append({"role": "human", "content": state["message"]})
-    if state.get("response_message") and state.get("agent_name"):
-        new_history.append({"role": state["agent_name"], "content": state["response_message"]})
+    for run in agent_runs:
+        for msg in run.get("messages", []):
+            if msg.get("type") == "text":
+                new_history.append({"role": run["agent"], "content": msg["content"]})
 
-    # Truncate to last 20 entries (10 human+agent pairs) to avoid LLM context overflow
+    # Truncate to last 20 entries (10 human+agent pairs)
     new_history = new_history[-20:]
 
-    # 1. Update sf_sessions table
+    # Derive conversation_stage from last agent_run (CTA agent)
+    conversation_stage = state.get("conversation_stage", "active")
+    if agent_runs:
+        last_stage = agent_runs[-1].get("conversation_stage")
+        if last_stage:
+            conversation_stage = last_stage
+
+    # 1. Update sf_sessions
     supabase.table("sf_sessions").update(
         {
             "history": new_history,
-            "conversation_stage": state.get("conversation_stage", "active"),
+            "conversation_stage": conversation_stage,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     ).eq("session_id", state["session_id"]).execute()
 
-    # 2. Insert agent activation audit
-    if state.get("agent_name"):
-        try:
-            from app.core.config import get_settings
-            sofia_version = get_settings().sofia_version
-            supabase.table("sf_agent_activations").insert(
-                {
-                    "session_id": state["session_id"],
-                    "agent_name": state["agent_name"],
-                    "triggered_by": state.get("intent"),
-                    "reasoning": state.get("reasoning"),
-                    "processing_ms": state.get("processing_time_ms"),
-                    "sofia_version": sofia_version,
-                }
-            ).execute()
-        except Exception as e:
-            print(f"[save_session] sf_agent_activations insert failed: {e}")
+    # 2. Insert one sf_agent_activations row per agent_run
+    try:
+        from app.core.config import get_settings
+        sofia_version = get_settings().sofia_version
+        for run in agent_runs:
+            supabase.table("sf_agent_activations").insert({
+                "session_id": state["session_id"],
+                "agent_name": run.get("agent"),
+                "triggered_by": ", ".join(state.get("detected_intents", [])),
+                "reasoning": run.get("reasoning"),
+                "processing_ms": run.get("duration_ms"),
+                "sofia_version": sofia_version,
+                "prompt_tokens": run.get("prompt_tokens", 0),
+                "completion_tokens": run.get("completion_tokens", 0),
+                "total_tokens": run.get("total_tokens", 0),
+                "trace_id": run.get("trace_id"),
+                "language": run.get("language", "pt-BR"),
+                "clinic_id": state.get("clinic_id"),
+                "messages": run.get("messages"),
+                "data": run.get("data"),
+                "started_at": run.get("started_at"),
+                "duration_ms": run.get("duration_ms"),
+            }).execute()
+    except Exception as e:
+        print(f"[save_session] sf_agent_activations insert failed: {e}")
+
+    # 3. Persist agent data (appointments, escalations, etc.)
+    persist_agent_data(agent_runs, state)

@@ -1,5 +1,5 @@
 """
-SofiaRouterAgent — classifies patient message into a single intent.
+SofiaRouterAgent — classifies patient message into one or more intents and detects language.
 """
 
 import re
@@ -7,6 +7,16 @@ import dspy
 from typing import List, Dict, Any
 
 from .signatures import SofiaRouterSignature, SofiaIntentType
+
+
+INTENT_PRIORITY = {
+    "HUMAN_ESCALATION": 1,
+    "SCHEDULE": 2,
+    "REENGAGE": 3,
+    "FAQ": 4,
+    "GREETING": 5,
+    "UNCLASSIFIED": 6,
+}
 
 
 class SofiaRouterAgent(dspy.Module):
@@ -25,17 +35,40 @@ class SofiaRouterAgent(dspy.Module):
             lines.append(f"{prefix}: {content}")
         return "\n".join(lines[-20:])  # last 20 turns
 
-    def _parse_intent(self, raw: Any) -> str:
+    def _parse_intents(self, raw: Any) -> List[str]:
         valid = {item.value for item in SofiaIntentType}
+        seen = set()
+        parsed = []
+
         if isinstance(raw, str):
-            candidate = raw.strip().upper()
-            if candidate in valid:
-                return candidate
-            # Try to extract from phrase e.g. "The intent is SCHEDULE"
-            for v in valid:
-                if v in candidate:
-                    return v
-        return SofiaIntentType.UNCLASSIFIED.value
+            candidates = [part.strip().upper() for part in raw.split(",")]
+            for candidate in candidates:
+                # Exact match first
+                if candidate in valid and candidate not in seen:
+                    seen.add(candidate)
+                    parsed.append(candidate)
+                    continue
+                # Substring match fallback
+                for v in valid:
+                    if v in candidate and v not in seen:
+                        seen.add(v)
+                        parsed.append(v)
+                        break
+
+        if not parsed:
+            return [SofiaIntentType.UNCLASSIFIED.value]
+
+        # Sort by INTENT_PRIORITY descending (highest number first = informational first,
+        # lowest number = most important = CTA = last)
+        parsed.sort(key=lambda x: INTENT_PRIORITY.get(x, 6), reverse=True)
+        return parsed
+
+    def _parse_language(self, raw: Any) -> str:
+        if isinstance(raw, str):
+            cleaned = raw.strip()
+            if cleaned:
+                return cleaned
+        return "pt-BR"
 
     def _parse_confidence(self, raw: Any) -> float:
         try:
@@ -51,7 +84,6 @@ class SofiaRouterAgent(dspy.Module):
         latest_message: str,
         history: List[Dict[str, str]],
         conversation_stage: str,
-        language: str = "pt-BR",
     ) -> Dict[str, Any]:
         history_str = self._format_history(history)
 
@@ -60,19 +92,18 @@ class SofiaRouterAgent(dspy.Module):
                 latest_message=latest_message,
                 history_str=history_str,
                 conversation_stage=conversation_stage,
-                language=language,
             )
-            intent = self._parse_intent(result.intent)
-            confidence = self._parse_confidence(result.confidence)
+            detected_intents = self._parse_intents(result.detected_intents)
+            language = self._parse_language(result.language)
             reasoning = str(result.reasoning).strip()
         except Exception as e:
             print(f"RouterAgent error: {e}")
-            intent = SofiaIntentType.UNCLASSIFIED.value
-            confidence = 0.0
+            detected_intents = [SofiaIntentType.UNCLASSIFIED.value]
+            language = "pt-BR"
             reasoning = f"Erro no roteamento: {str(e)}"
 
         return {
-            "intent": intent,
+            "detected_intents": detected_intents,
+            "language": language,
             "reasoning": reasoning,
-            "confidence": confidence,
         }

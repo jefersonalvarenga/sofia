@@ -3,7 +3,7 @@ HumanEscalationAgent — deterministic agent, no LLM.
 Generates a transition message and sets requires_human=True.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 class HumanEscalationAgent:
@@ -24,9 +24,12 @@ class HumanEscalationAgent:
         )
 
         return {
-            "response_message": message,
-            "agent_name": "HumanEscalation",
+            "messages": [{"type": "text", "content": message}],
             "conversation_stage": "human_escalation",
-            "requires_human": True,
             "reasoning": "Patient explicitly requested human agent.",
+            "requires_human": True,
+            "data": {
+                "type": "escalation",
+                "reason": "patient_request",
+            },
         }

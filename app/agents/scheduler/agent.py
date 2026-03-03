@@ -108,24 +108,30 @@ class SchedulerAgent(dspy.Module):
             if new_stage == "presenting_slots" and not available_slots:
                 new_stage = "collecting_service"
 
+            if new_stage == "booked":
+                return {
+                    "messages": [{"type": "text", "content": str(result.response_message).strip()}],
+                    "conversation_stage": "booked",
+                    "reasoning": str(result.reasoning).strip(),
+                    "data": {
+                        "type": "appointment",
+                        "service": service_requested,
+                        "chosen_slot": chosen_slot,
+                    },
+                }
+
             return {
-                "response_message": str(result.response_message).strip(),
+                "messages": [{"type": "text", "content": str(result.response_message).strip()}],
                 "conversation_stage": new_stage,
-                "chosen_slot": chosen_slot,
-                "service_requested": service_requested,
                 "reasoning": str(result.reasoning).strip(),
-                "agent_name": "Scheduler",
-                "requires_human": False,
+                "data": None,
             }
 
         except Exception as e:
             print(f"SchedulerAgent error: {e}")
             return {
-                "response_message": "Vou verificar os horários disponíveis para você. Um momento!",
+                "messages": [{"type": "text", "content": "Vou verificar os horários disponíveis para você. Um momento!"}],
                 "conversation_stage": stage,
-                "chosen_slot": None,
-                "service_requested": None,
                 "reasoning": f"Erro: {str(e)}",
-                "agent_name": "Scheduler",
-                "requires_human": False,
+                "data": None,
             }

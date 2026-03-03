@@ -1,0 +1,524 @@
+{
+  "version": "1",
+  "router": [
+    {
+      "id": "r01",
+      "message": "oi",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "GREETING",
+      "description": "Saudação simples 'oi'"
+    },
+    {
+      "id": "r02",
+      "message": "olá",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "GREETING",
+      "description": "Saudação 'olá'"
+    },
+    {
+      "id": "r03",
+      "message": "bom dia, tudo bem?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "GREETING",
+      "description": "Saudação formal com 'bom dia'"
+    },
+    {
+      "id": "r04",
+      "message": "oi, é a primeira vez que venho aqui",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "GREETING",
+      "description": "Saudação com contexto de primeira visita"
+    },
+    {
+      "id": "r05",
+      "message": "quanto custa o clareamento dental?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "FAQ",
+      "description": "Pergunta direta sobre preço de serviço"
+    },
+    {
+      "id": "r06",
+      "message": "qual o horário de funcionamento de vocês?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "FAQ",
+      "description": "Pergunta sobre horário de atendimento"
+    },
+    {
+      "id": "r07",
+      "message": "qual o endereço da clínica?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "FAQ",
+      "description": "Pergunta sobre endereço"
+    },
+    {
+      "id": "r08",
+      "message": "vocês aceitam plano Unimed?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "FAQ",
+      "description": "Pergunta sobre convênio aceito"
+    },
+    {
+      "id": "r09",
+      "message": "como funciona o implante dentário?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "FAQ",
+      "description": "Pergunta sobre funcionamento de procedimento"
+    },
+    {
+      "id": "r10",
+      "message": "quero agendar uma consulta",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "SCHEDULE",
+      "description": "Intenção explícita de agendar consulta"
+    },
+    {
+      "id": "r11",
+      "message": "preciso marcar um horário",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "SCHEDULE",
+      "description": "Intenção de marcar horário"
+    },
+    {
+      "id": "r12",
+      "message": "tem algum horário disponível essa semana?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "SCHEDULE",
+      "description": "Verificação de disponibilidade de horários"
+    },
+    {
+      "id": "r13",
+      "message": "posso agendar para amanhã de manhã?",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "SCHEDULE",
+      "description": "Agendamento com preferência de data/período"
+    },
+    {
+      "id": "r14",
+      "message": "quero o das 09h",
+      "history": [
+        {"role": "human", "content": "quero agendar"},
+        {"role": "Scheduler", "content": "Que serviço você deseja agendar?"},
+        {"role": "human", "content": "clareamento dental"},
+        {"role": "Scheduler", "content": "Temos disponíveis: Seg, 05/01 às 09h (2027-01-05 09:00) e Seg, 05/01 às 10h (2027-01-05 10:00). Qual você prefere?"}
+      ],
+      "stage": "presenting_slots",
+      "expected_intent": "SCHEDULE",
+      "description": "Escolha de slot com histórico de agendamento em curso"
+    },
+    {
+      "id": "r15",
+      "message": "quero falar com um atendente",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "HUMAN_ESCALATION",
+      "description": "Pedido explícito de atendente humano"
+    },
+    {
+      "id": "r16",
+      "message": "me passa para uma pessoa real",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "HUMAN_ESCALATION",
+      "description": "Pedido de atendente usando expressão coloquial"
+    },
+    {
+      "id": "r17",
+      "message": "preciso falar com alguém da clínica agora",
+      "history": [],
+      "stage": "new",
+      "expected_intent": "HUMAN_ESCALATION",
+      "description": "Pedido urgente de contato humano"
+    },
+    {
+      "id": "r18",
+      "message": "oi, estou de volta para continuar",
+      "history": [
+        {"role": "human", "content": "quero saber sobre clareamento"},
+        {"role": "FAQResponder", "content": "O clareamento dental custa R$ 350,00. Gostaria de agendar?"},
+        {"role": "human", "content": "vou pensar e volto depois"}
+      ],
+      "stage": "faq",
+      "expected_intent": "REENGAGE",
+      "description": "Retomada de conversa pausada após histórico de FAQ"
+    },
+    {
+      "id": "r19",
+      "message": "aqui de novo, posso continuar?",
+      "history": [
+        {"role": "human", "content": "preciso marcar uma consulta"},
+        {"role": "Scheduler", "content": "Que serviço você deseja agendar?"}
+      ],
+      "stage": "collecting_service",
+      "expected_intent": "REENGAGE",
+      "description": "Re-engajamento após pausa em fluxo de agendamento"
+    },
+    {
+      "id": "r20",
+      "message": "ok",
+      "history": [],
+      "stage": "new",
+      "expected_intent": null,
+      "description": "Mensagem ambígua de 1 palavra - não deve crashar; qualquer intent válido aceito"
+    }
+  ],
+  "scheduler": [
+    {
+      "id": "s01",
+      "message": "quero agendar",
+      "history": [],
+      "stage": "new",
+      "slots": ["2027-01-05 09:00", "2027-01-05 10:00", "2027-01-05 11:00"],
+      "services": ["Clareamento Dental", "Limpeza Dental", "Restauração Dentária"],
+      "expected_stage": "collecting_service",
+      "description": "Intenção de agendar sem serviço informado"
+    },
+    {
+      "id": "s02",
+      "message": "preciso marcar uma consulta",
+      "history": [],
+      "stage": "new",
+      "slots": ["2027-01-05 09:00"],
+      "services": ["Clareamento Dental", "Limpeza Dental"],
+      "expected_stage": "collecting_service",
+      "description": "Intenção de consulta sem especificar serviço"
+    },
+    {
+      "id": "s03",
+      "message": "tenho interesse em fazer um procedimento odontológico",
+      "history": [],
+      "stage": "new",
+      "slots": ["2027-01-05 09:00", "2027-01-05 14:00"],
+      "services": ["Implante Dentário", "Clareamento Dental", "Limpeza Dental"],
+      "expected_stage": "collecting_service",
+      "description": "Intenção vaga de procedimento sem serviço específico"
+    },
+    {
+      "id": "s04",
+      "message": "quero fazer clareamento dental",
+      "history": [
+        {"role": "human", "content": "quero agendar"},
+        {"role": "Scheduler", "content": "Que serviço você gostaria de agendar? Temos: Clareamento Dental, Limpeza Dental."}
+      ],
+      "stage": "collecting_service",
+      "slots": ["2027-01-05 09:00", "2027-01-05 10:00"],
+      "services": ["Clareamento Dental", "Limpeza Dental"],
+      "expected_stage": "presenting_slots",
+      "description": "Paciente informa serviço explicitamente → deve apresentar slots"
+    },
+    {
+      "id": "s05",
+      "message": "limpeza dental",
+      "history": [
+        {"role": "human", "content": "preciso marcar"},
+        {"role": "Scheduler", "content": "Qual serviço você deseja agendar?"}
+      ],
+      "stage": "collecting_service",
+      "slots": ["2027-01-05 09:00", "2027-01-05 11:00"],
+      "services": ["Clareamento Dental", "Limpeza Dental"],
+      "expected_stage": "presenting_slots",
+      "description": "Paciente informa serviço com resposta curta de 2 palavras"
+    },
+    {
+      "id": "s06",
+      "message": "restauração dentária por favor",
+      "history": [
+        {"role": "human", "content": "olá quero agendar"},
+        {"role": "Scheduler", "content": "Que serviço você precisa?"}
+      ],
+      "stage": "collecting_service",
+      "slots": ["2027-01-05 10:00", "2027-01-05 14:00"],
+      "services": ["Clareamento Dental", "Restauração Dentária", "Limpeza Dental"],
+      "expected_stage": "presenting_slots",
+      "description": "Paciente informa serviço com 'por favor' → deve apresentar slots"
+    },
+    {
+      "id": "s07",
+      "message": "quero o primeiro horário",
+      "history": [
+        {"role": "human", "content": "clareamento dental"},
+        {"role": "Scheduler", "content": "Temos disponíveis: Seg, 05/01 às 09h (2027-01-05 09:00) e Seg, 05/01 às 10h (2027-01-05 10:00). Qual você prefere?"}
+      ],
+      "stage": "presenting_slots",
+      "slots": ["2027-01-05 09:00", "2027-01-05 10:00"],
+      "services": ["Clareamento Dental"],
+      "expected_stage": "confirming",
+      "description": "Paciente escolhe primeiro slot por posição → deve ir para confirming"
+    },
+    {
+      "id": "s08",
+      "message": "o das 09h",
+      "history": [
+        {"role": "human", "content": "limpeza dental"},
+        {"role": "Scheduler", "content": "Temos: Seg, 05/01 às 09h (2027-01-05 09:00) e Seg, 05/01 às 11h (2027-01-05 11:00). Qual você prefere?"}
+      ],
+      "stage": "presenting_slots",
+      "slots": ["2027-01-05 09:00", "2027-01-05 11:00"],
+      "services": ["Limpeza Dental"],
+      "expected_stage": "confirming",
+      "description": "Paciente escolhe slot por horário específico → deve ir para confirming"
+    },
+    {
+      "id": "s09",
+      "message": "a segunda opção, por favor",
+      "history": [
+        {"role": "human", "content": "clareamento"},
+        {"role": "Scheduler", "content": "Temos disponíveis: Seg, 05/01 às 09h (2027-01-05 09:00) e Seg, 05/01 às 10h (2027-01-05 10:00). Qual você prefere?"}
+      ],
+      "stage": "presenting_slots",
+      "slots": ["2027-01-05 09:00", "2027-01-05 10:00"],
+      "services": ["Clareamento Dental"],
+      "expected_stage": "confirming",
+      "description": "Paciente escolhe segundo slot por posição → deve ir para confirming"
+    },
+    {
+      "id": "s10",
+      "message": "sim, pode confirmar",
+      "history": [
+        {"role": "human", "content": "quero o das 09h"},
+        {"role": "Scheduler", "content": "Ótimo! Vou confirmar seu agendamento de Clareamento Dental para Seg, 05/01 às 09h (2027-01-05 09:00). Confirma?"}
+      ],
+      "stage": "confirming",
+      "slots": ["2027-01-05 09:00"],
+      "services": ["Clareamento Dental"],
+      "expected_stage": "booked",
+      "description": "Confirmação explícita 'sim, pode confirmar' → deve ir para booked"
+    },
+    {
+      "id": "s11",
+      "message": "perfeito, confirmo",
+      "history": [
+        {"role": "human", "content": "o primeiro"},
+        {"role": "Scheduler", "content": "Agendamento de Limpeza Dental para Seg, 05/01 às 09h (2027-01-05 09:00). Posso confirmar?"}
+      ],
+      "stage": "confirming",
+      "slots": ["2027-01-05 09:00"],
+      "services": ["Limpeza Dental"],
+      "expected_stage": "booked",
+      "description": "Confirmação com 'perfeito' → deve ir para booked"
+    },
+    {
+      "id": "s12",
+      "message": "tá bom, confirma",
+      "history": [
+        {"role": "human", "content": "o das 10h"},
+        {"role": "Scheduler", "content": "Agendamento de Restauração Dentária para Seg, 05/01 às 10h (2027-01-05 10:00). Confirma?"}
+      ],
+      "stage": "confirming",
+      "slots": ["2027-01-05 10:00"],
+      "services": ["Restauração Dentária"],
+      "expected_stage": "booked",
+      "description": "Confirmação informal 'tá bom' → deve ir para booked"
+    },
+    {
+      "id": "s13",
+      "message": "sim, confirmo",
+      "history": [
+        {"role": "human", "content": "quero agendar"},
+        {"role": "Scheduler", "content": "Qual horário você prefere?"}
+      ],
+      "stage": "confirming",
+      "slots": [],
+      "services": ["Clareamento Dental"],
+      "expected_stage": "confirming",
+      "description": "Guard: confirming sem chosen_slot nem slots disponíveis → não deve ir para booked"
+    },
+    {
+      "id": "s14",
+      "message": "clareamento dental",
+      "history": [],
+      "stage": "collecting_service",
+      "slots": [],
+      "services": ["Clareamento Dental", "Limpeza Dental"],
+      "expected_stage": "collecting_service",
+      "description": "Guard: sem slots disponíveis → não deve ir para presenting_slots"
+    },
+    {
+      "id": "s15",
+      "message": "bom dia",
+      "history": [
+        {"role": "human", "content": "quero agendar"},
+        {"role": "Scheduler", "content": "Temos: Seg, 05/01 às 09h (2027-01-05 09:00). Qual você prefere?"}
+      ],
+      "stage": "presenting_slots",
+      "slots": ["2027-01-05 09:00"],
+      "services": ["Clareamento Dental"],
+      "expected_stage": null,
+      "description": "Saudação fora de contexto em presenting_slots - não deve crashar; qualquer stage válido aceito"
+    }
+  ],
+  "faq_responder": [
+    {
+      "id": "f01",
+      "message": "quanto custa clareamento dental?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Clareamento Dental\", \"price\": 350.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": ["350", "clareamento"],
+      "forbidden_keywords": [],
+      "description": "Pergunta de preço com serviço no contexto"
+    },
+    {
+      "id": "f02",
+      "message": "qual o preço da limpeza dental?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Limpeza Dental\", \"price\": 120.0}, {\"name\": \"Clareamento Dental\", \"price\": 350.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": ["120", "limpeza"],
+      "forbidden_keywords": [],
+      "description": "Pergunta de preço com múltiplos serviços no contexto"
+    },
+    {
+      "id": "f03",
+      "message": "tem alguma promoção ativa?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Clareamento Dental\", \"price\": 350.0}], \"offers\": [{\"name\": \"Promoção Clareamento\", \"final_price\": 250.0, \"is_active\": true}]}",
+      "business_rules": "[]",
+      "expected_keywords": ["250", "promo"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre promoção com oferta ativa no contexto"
+    },
+    {
+      "id": "f04",
+      "message": "qual o horário de atendimento de vocês?",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[{\"rule_type\": \"HOURS\", \"content\": \"Segunda a Sexta das 8h às 18h, Sábados das 8h às 12h\"}]",
+      "expected_keywords": ["segunda", "sexta", "sábado"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre horário com regra de negócio configurada"
+    },
+    {
+      "id": "f05",
+      "message": "qual o endereço de vocês?",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[{\"rule_type\": \"ADDRESS\", \"content\": \"Rua das Flores, 123, Centro, São Paulo - SP\"}]",
+      "expected_keywords": ["flores"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre endereço com regra de negócio configurada"
+    },
+    {
+      "id": "f06",
+      "message": "vocês aceitam Unimed?",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[{\"rule_type\": \"INSURANCE\", \"content\": \"Aceitamos Unimed, Bradesco Saúde e SulAmérica\"}]",
+      "expected_keywords": ["unimed"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre convênio aceito com regra configurada"
+    },
+    {
+      "id": "f07",
+      "message": "aceitam plano AmilDental?",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[{\"rule_type\": \"INSURANCE\", \"content\": \"Aceitamos apenas Unimed e Bradesco Saúde. Não aceitamos outros planos.\"}]",
+      "expected_keywords": [],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre convênio não listado - deve responder sem crash"
+    },
+    {
+      "id": "f08",
+      "message": "como funciona o clareamento dental?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Clareamento Dental\", \"price\": 350.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": ["clareamento"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre funcionamento de procedimento"
+    },
+    {
+      "id": "f09",
+      "message": "quanto tempo dura uma limpeza dental?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Limpeza Dental\", \"price\": 120.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": ["limpeza"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre duração de procedimento"
+    },
+    {
+      "id": "f10",
+      "message": "o implante dentário é doloroso?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Implante Dentário\", \"price\": 1800.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": ["implante"],
+      "forbidden_keywords": [],
+      "description": "Pergunta sobre sensação de dor em procedimento específico"
+    },
+    {
+      "id": "f11",
+      "message": "oi",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": [],
+      "forbidden_keywords": [],
+      "description": "Saudação simples - FAQResponder deve dar boas-vindas sem crash"
+    },
+    {
+      "id": "f12",
+      "message": "olá, tudo bem?",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": [],
+      "forbidden_keywords": [],
+      "description": "Saudação com pergunta - FAQResponder deve responder educadamente"
+    },
+    {
+      "id": "f13",
+      "message": "quanto custa o tratamento xyz123?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Clareamento Dental\", \"price\": 350.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": [],
+      "forbidden_keywords": [],
+      "description": "Serviço completamente desconhecido - deve responder sem crash"
+    },
+    {
+      "id": "f14",
+      "message": "olá estou com uma dúvida bem específica sobre os procedimentos que vocês oferecem especialmente sobre o clareamento dental a laser que li em um artigo sobre tecnologia odontológica moderna usada em clínicas de ponta gostaria de saber mais detalhes",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Clareamento Dental\", \"price\": 350.0}], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": ["clareamento"],
+      "forbidden_keywords": [],
+      "description": "Mensagem muito longa - deve processar e responder normalmente"
+    },
+    {
+      "id": "f15",
+      "message": "😊",
+      "history": [],
+      "services_context": "{\"services\": [], \"offers\": []}",
+      "business_rules": "[]",
+      "expected_keywords": [],
+      "forbidden_keywords": [],
+      "description": "Emoji apenas - não deve crashar, deve dar resposta amigável"
+    },
+    {
+      "id": "f16",
+      "message": "limpeza, vocês atendem convênio?",
+      "history": [],
+      "services_context": "{\"services\": [{\"name\": \"Limpeza Dental\", \"price\": 120.0}], \"offers\": []}",
+      "business_rules": "[{\"rule_type\": \"convenio\", \"content\": \"Aceitamos os convênios: Amil/Santander, Uniodonto, Alma Odonto, ASPMI, CDA.\"}]",
+      "expected_keywords": ["amil", "uniodonto"],
+      "forbidden_keywords": ["não temos informações"],
+      "description": "Mensagem dupla: serviço + convênio — deve citar convênios aceitos da business_rule"
+    }
+  ]
+}

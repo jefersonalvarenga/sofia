@@ -34,20 +34,16 @@ class FAQResponderAgent(dspy.Module):
                 business_rules=business_rules,
             )
             return {
-                "response_message": str(result.response_message).strip(),
-                "reasoning": str(result.reasoning).strip(),
-                "agent_name": "FAQResponder",
+                "messages": [{"type": "text", "content": str(result.response_message).strip()}],
                 "conversation_stage": "faq",
-                "requires_human": False,
+                "reasoning": str(result.reasoning).strip(),
             }
         except Exception as e:
             print(f"FAQResponderAgent error: {e}")
             return {
-                "response_message": "Olá! Como posso ajudar?",
-                "reasoning": f"Erro: {str(e)}",
-                "agent_name": "FAQResponder",
+                "messages": [{"type": "text", "content": "Olá! Como posso ajudar?"}],
                 "conversation_stage": "faq",
-                "requires_human": False,
+                "reasoning": f"Erro: {str(e)}",
             }
 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
