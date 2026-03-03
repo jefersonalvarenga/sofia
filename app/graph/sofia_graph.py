@@ -182,11 +182,17 @@ def node_execute_agents(state: SofiaState) -> dict:
     Run each detected agent in priority order (informational first, CTA last).
     Wraps each call with build_agent_run() for timing + token tracking.
     """
-    detected_intents = state.get("detected_intents", ["UNCLASSIFIED"])
+    detected_intents = list(state.get("detected_intents", ["UNCLASSIFIED"]))
     trace_id = state.get("trace_id", "")
     clinic_id = state.get("clinic_id", "")
     session_id = state.get("session_id", "")
     language = state.get("language", "pt-BR")
+
+    # Suppress GREETING when an action intent is present — avoids double messages
+    # and WhatsApp out-of-order delivery (e.g. greeting arriving after schedule prompt).
+    _ACTION_INTENTS = {"SCHEDULE", "HUMAN_ESCALATION"}
+    if "GREETING" in detected_intents and any(i in _ACTION_INTENTS for i in detected_intents):
+        detected_intents = [i for i in detected_intents if i != "GREETING"]
 
     from app.core.config import get_settings
     sofia_version = get_settings().sofia_version
