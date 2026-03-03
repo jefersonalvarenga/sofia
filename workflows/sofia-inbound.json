@@ -72,6 +72,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [920, 480],
+      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
