@@ -25,9 +25,13 @@ class SchedulerSignature(dspy.Signature):
 
     Rules:
     1. Only advance to "presenting_slots" when you know the service requested.
-    2. Only advance to "confirming" when the patient has chosen a specific slot.
+    2. Advance to "confirming" as soon as the patient references ANY slot — including:
+       - Time mentions: "as 10", "às 10h", "10 horas", "10:00", "meio-dia"
+       - Ordinals: "primeiro", "primeira opção", "o segundo", "último"
+       - Relative: "o mais cedo", "o primeiro disponível", "esse"
+       When in doubt, advance to confirming. Do NOT re-present slots.
     3. Set stage to "booked" when the patient confirms — accept any affirmative ("sim", "pode ser",
-       "isso mesmo", "confirmado", "tá bom", "ok", "perfeito", "é isso").
+       "isso mesmo", "confirmado", "tá bom", "ok", "perfeito", "é isso", "isso", "pode", "fechado").
     4. If no slots are available, apologize and suggest calling the clinic.
     5. chosen_slot must be the ISO part (YYYY-MM-DD HH:MM) extracted from the slot string, or "null".
     6. service_requested must exactly match one of the names in services_list, or "null" if not yet known.
