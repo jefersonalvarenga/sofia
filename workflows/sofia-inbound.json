@@ -89,7 +89,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=UPDATE public.sf_ad_clicks\nSET resolved = TRUE,\n    resolved_at = NOW(),\n    resolved_jid = '{{ $json.remoteJid }}'\nWHERE ref_code = '{{ $json.refCode }}'\n  AND clinic_id = '{{ $json.clinicId }}'::uuid\n  AND expires_at > NOW()\n  AND resolved = FALSE\n  AND '{{ $json.refCode }}' <> ''\n  AND '{{ $json.clinicId }}' <> ''\nRETURNING id AS attribution_id",
+        "query": "=WITH new_resolve AS (\n  UPDATE public.sf_ad_clicks\n  SET resolved = TRUE, resolved_at = NOW(), resolved_jid = '{{ $json.remoteJid }}'\n  WHERE ref_code = '{{ $json.refCode }}'\n    AND clinic_id = NULLIF('{{ $json.clinicId }}', '')::uuid\n    AND expires_at > NOW()\n    AND resolved = FALSE\n    AND '{{ $json.refCode }}' <> ''\n  RETURNING id\n)\nSELECT COALESCE(\n  (SELECT id FROM new_resolve LIMIT 1),\n  (SELECT id FROM public.sf_ad_clicks\n   WHERE resolved_jid = '{{ $json.remoteJid }}'\n     AND clinic_id = NULLIF('{{ $json.clinicId }}', '')::uuid\n     AND resolved = TRUE\n     AND '{{ $json.remoteJid }}' <> ''\n   ORDER BY resolved_at DESC LIMIT 1)\n) AS attribution_id",
         "options": {}
       },
       "id": "resolver-attribution",
@@ -97,6 +97,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [1360, 300],
+      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
