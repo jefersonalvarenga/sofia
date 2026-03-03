@@ -188,10 +188,11 @@ def node_execute_agents(state: SofiaState) -> dict:
     session_id = state.get("session_id", "")
     language = state.get("language", "pt-BR")
 
-    # Suppress GREETING when an action intent is present — avoids double messages
-    # and WhatsApp out-of-order delivery (e.g. greeting arriving after schedule prompt).
+    # Suppress GREETING on returning messages — GreetingAgent only fires on first contact.
+    # On first message (empty history), keep GREETING alongside other intents.
     _ACTION_INTENTS = {"SCHEDULE", "HUMAN_ESCALATION"}
-    if "GREETING" in detected_intents and any(i in _ACTION_INTENTS for i in detected_intents):
+    history_is_empty = len(state.get("history", [])) == 0
+    if "GREETING" in detected_intents and not history_is_empty:
         detected_intents = [i for i in detected_intents if i != "GREETING"]
 
     from app.core.config import get_settings

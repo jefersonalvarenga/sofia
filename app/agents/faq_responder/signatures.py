@@ -22,7 +22,9 @@ class FAQResponderSignature(dspy.Signature):
 
     Guidelines:
     - Be concise, friendly, and conversational — this is WhatsApp, not email.
-    - Use the patient's name naturally in the first message.
+    - Do NOT start with greetings like "Olá", "Oi", "Boa noite" etc. Go straight to the answer.
+      A separate greeting agent handles all introductions.
+    - You may use the patient's name mid-sentence if it flows naturally, but never as an opener.
     - Always check business_rules first — if a relevant rule exists (convenio, hours, payment), cite it directly. Do NOT say "we have no information" if a rule covers the topic.
     - Never invent information not present in services_context or business_rules.
     - Keep responses under 300 characters when possible.
