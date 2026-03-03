@@ -20,25 +20,22 @@ class SchedulerSignature(dspy.Signature):
     Scheduling stages:
     - collecting_service: You don't yet know which service the patient wants. Ask for it.
     - presenting_slots: You know the service. Present the available_slots (max 3) clearly.
-    - confirming: Patient chose a slot. Confirm the details before finalizing.
-    - booked: Patient confirmed. The appointment is booked. Send a final confirmation message.
+    - booked: Patient selected a slot. Book immediately and send a warm confirmation message.
 
     Rules:
     1. Only advance to "presenting_slots" when you know the service requested.
-    2. Advance to "confirming" as soon as the patient references ANY slot — including:
+    2. Advance DIRECTLY to "booked" as soon as the patient references ANY slot — including:
        - Time mentions: "as 10", "às 10h", "10 horas", "10:00", "meio-dia"
        - Ordinals: "primeiro", "primeira opção", "o segundo", "último"
        - Relative: "o mais cedo", "o primeiro disponível", "esse"
-       When in doubt, advance to confirming. Do NOT re-present slots.
-    3. Set stage to "booked" when the patient confirms — accept any affirmative ("sim", "pode ser",
-       "isso mesmo", "confirmado", "tá bom", "ok", "perfeito", "é isso", "isso", "pode", "fechado").
-    4. If no slots are available, apologize and suggest calling the clinic.
-    5. chosen_slot must be the ISO part (YYYY-MM-DD HH:MM) extracted from the slot string, or "null".
-    6. service_requested must exactly match one of the names in services_list, or "null" if not yet known.
-    7. Keep messages concise and WhatsApp-friendly (use line breaks for slot lists).
-    8. Use the patient's name naturally in the first message.
-    9. Respond in the same language as the patient (usually pt-BR).
-    10. When presenting slots, show the friendly label (e.g. "Qui, 26/02 às 09h"). Do NOT show the ISO code to the patient.
+       Do NOT ask for confirmation. Do NOT use the "confirming" stage at all.
+    3. If no slots are available, apologize and suggest calling the clinic.
+    4. chosen_slot must be the ISO part (YYYY-MM-DD HH:MM) extracted from the slot string, or "null".
+    5. service_requested must exactly match one of the names in services_list, or "null" if not yet known.
+    6. Keep messages concise and WhatsApp-friendly (use line breaks for slot lists).
+    7. Use the patient's name naturally in the first message.
+    8. Respond in the same language as the patient (usually pt-BR).
+    9. When presenting slots, show the friendly label (e.g. "Qui, 26/02 às 09h"). Do NOT show the ISO code to the patient.
     """
 
     patient_message = dspy.InputField(desc="Latest message from the patient.")

@@ -10,7 +10,7 @@ from datetime import datetime
 from .signatures import SchedulerSignature
 
 
-VALID_STAGES = {"collecting_service", "presenting_slots", "confirming", "booked"}
+VALID_STAGES = {"collecting_service", "presenting_slots", "booked"}
 
 WEEKDAYS_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
 
@@ -101,31 +101,24 @@ class SchedulerAgent(dspy.Module):
             service_requested = self._parse_service(result.service_requested)
 
             # Guard: can't be booked without a chosen slot.
+            # Fallback: "às Xh" mention in history cross-referenced with available_slots.
+            # (Sofia shows friendly format only — ISO is never in patient-facing messages.)
             if new_stage == "booked" and not chosen_slot:
-                # Fallback A: ISO in parentheses in history "(2026-03-04 10:00)"
                 for turn in reversed(history[-10:]):
-                    m = re.search(r"\((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)", turn.get("content", ""))
-                    if m:
-                        chosen_slot = m.group(1)
+                    hour_match = re.search(r"às\s+(\d{1,2})h", turn.get("content", ""))
+                    if hour_match:
+                        target_hour = int(hour_match.group(1))
+                        for slot in available_slots:
+                            try:
+                                if int(slot.split(" ")[1].split(":")[0]) == target_hour:
+                                    chosen_slot = slot
+                                    break
+                            except Exception:
+                                continue
+                    if chosen_slot:
                         break
-                # Fallback B: "às Xh" time mention cross-referenced with available_slots
-                # (Sofia shows friendly format only — ISO is never shown to the patient)
-                if not chosen_slot and available_slots:
-                    for turn in reversed(history[-10:]):
-                        hour_match = re.search(r"às\s+(\d{1,2})h", turn.get("content", ""))
-                        if hour_match:
-                            target_hour = int(hour_match.group(1))
-                            for slot in available_slots:
-                                try:
-                                    if int(slot.split(" ")[1].split(":")[0]) == target_hour:
-                                        chosen_slot = slot
-                                        break
-                                except Exception:
-                                    continue
-                        if chosen_slot:
-                            break
             if new_stage == "booked" and not chosen_slot:
-                new_stage = "confirming"
+                new_stage = "presenting_slots"
 
             # Guard: can't present slots without available_slots
             if new_stage == "presenting_slots" and not available_slots:
