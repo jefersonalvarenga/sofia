@@ -70,6 +70,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [920, 300],
+      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -128,6 +129,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [1580, 400],
+      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -174,6 +176,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [2240, 500],
+      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -220,6 +223,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [2900, 600],
+      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "postgres-account", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
