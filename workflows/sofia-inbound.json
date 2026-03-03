@@ -89,7 +89,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=-- Resolve ref code → attribution_id and mark click as contacted\n-- Returns empty if refCode is null/unknown or already resolved\nWITH click AS (\n  SELECT id FROM public.sf_ad_clicks\n  WHERE ref_code = NULLIF('{{ $json.refCode }}', 'null')\n    AND clinic_id = NULLIF('{{ $json.clinicId }}', 'null')\n    AND expires_at > NOW()\n    AND resolved = FALSE\n  LIMIT 1\n)\nUPDATE public.sf_ad_clicks\nSET resolved = TRUE,\n    resolved_at = NOW(),\n    resolved_jid = '{{ $json.remoteJid }}'\nWHERE id = (SELECT id FROM click)\nRETURNING id AS attribution_id",
+        "query": "=UPDATE public.sf_ad_clicks\nSET resolved = TRUE,\n    resolved_at = NOW(),\n    resolved_jid = '{{ $json.remoteJid }}'\nWHERE ref_code = '{{ $json.refCode }}'\n  AND clinic_id = '{{ $json.clinicId }}'::uuid\n  AND expires_at > NOW()\n  AND resolved = FALSE\n  AND '{{ $json.refCode }}' <> ''\n  AND '{{ $json.clinicId }}' <> ''\nRETURNING id AS attribution_id",
         "options": {}
       },
       "id": "resolver-attribution",
