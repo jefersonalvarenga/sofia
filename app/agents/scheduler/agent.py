@@ -93,14 +93,22 @@ class SchedulerAgent(dspy.Module):
                 services_list=services_str,
                 clinic_name=clinic_name,
                 patient_name=patient_name or "Paciente",
-                stage=stage,
+                current_stage=stage,
             )
 
             new_stage = self._parse_stage(result.stage, stage)
             chosen_slot = self._parse_slot(result.chosen_slot)
             service_requested = self._parse_service(result.service_requested)
 
-            # Guard: can't be booked without a chosen slot
+            # Guard: can't be booked without a chosen slot.
+            # Fallback: extract ISO slot from recent history when the LLM forgets to echo it
+            # (common in confirming→booked transition when patient says "sim").
+            if new_stage == "booked" and not chosen_slot:
+                for turn in reversed(history[-10:]):
+                    m = re.search(r"\((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)", turn.get("content", ""))
+                    if m:
+                        chosen_slot = m.group(1)
+                        break
             if new_stage == "booked" and not chosen_slot:
                 new_stage = "confirming"
 

@@ -31,7 +31,7 @@ class SchedulerSignature(dspy.Signature):
     services_list = dspy.InputField(desc="Comma-separated list of known clinic service names. service_requested must match one of these.")
     clinic_name = dspy.InputField(desc="Name of the clinic.")
     patient_name = dspy.InputField(desc="Patient's name.")
-    stage = dspy.InputField(desc="Current scheduling stage: collecting_service | presenting_slots | confirming | booked")
+    current_stage = dspy.InputField(desc="Current scheduling stage: collecting_service | presenting_slots | confirming | booked")
 
     response_message = dspy.OutputField(desc="The response to send to the patient.")
     stage = dspy.OutputField(desc="Updated stage: collecting_service | presenting_slots | confirming | booked")
