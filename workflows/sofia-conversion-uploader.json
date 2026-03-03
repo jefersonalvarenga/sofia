@@ -284,7 +284,7 @@
   "settings": {
     "executionOrder": "v1",
     "saveManualExecutions": true,
-    "executionTimeout": 60,
+    "executionTimeout": 120,
     "timezone": "America/Sao_Paulo"
   },
   "tags": [
