@@ -124,6 +124,7 @@ def build_agent_run(
         "messages": result.get("messages", []),
         "data": result.get("data"),
         "reasoning": result.get("reasoning"),
+        "conversation_stage": result.get("conversation_stage"),
         "started_at": started_at,
         "duration_ms": round(duration_ms, 2),
         "prompt_tokens": tokens["prompt_tokens"],
