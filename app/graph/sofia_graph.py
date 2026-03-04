@@ -20,6 +20,7 @@ from app.session.manager import (
 from app.core.telemetry import build_agent_run, log
 from app.agents.router.agent import SofiaRouterAgent
 from app.agents.greeting.agent import GreetingAgent
+from app.agents.closure.agent import ClosureAgent, is_closure_message
 from app.agents.faq_responder.agent import FAQResponderAgent
 from app.agents.scheduler.agent import SchedulerAgent
 from app.agents.human_escalation.agent import HumanEscalationAgent
@@ -30,6 +31,7 @@ from app.agents.human_escalation.agent import HumanEscalationAgent
 
 _router_agent = SofiaRouterAgent()
 _greeting_agent = GreetingAgent()
+_closure_agent = ClosureAgent()
 _faq_agent = FAQResponderAgent()
 _scheduler_agent = SchedulerAgent()
 _escalation_agent = HumanEscalationAgent()
@@ -106,6 +108,13 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
             patient_name=patient_name,
             assistant_name=assistant_name,
             clinic_name=clinic_name,
+        )
+
+    # UNCLASSIFIED: short social closures go to ClosureAgent (zero tokens)
+    if intent == "UNCLASSIFIED" and is_closure_message(state["message"]):
+        return _closure_agent.forward(
+            patient_name=patient_name,
+            conversation_stage=state.get("conversation_stage", "active"),
         )
 
     # FAQ | REENGAGE | UNCLASSIFIED → FAQResponder
@@ -222,7 +231,7 @@ def node_execute_agents(state: SofiaState) -> dict:
         log.info("node.execute_agents.run", intent=intent, trace_id=trace_id)
 
         agent_run = build_agent_run(
-            agent_name=_agent_name_for(intent),
+            agent_name=_agent_name_for(intent, state.get("message", "")),
             reason=INTENT_REASONS.get(intent, intent.lower()),
             trace_id=trace_id,
             clinic_id=clinic_id,
@@ -243,7 +252,9 @@ def node_execute_agents(state: SofiaState) -> dict:
     }
 
 
-def _agent_name_for(intent: str) -> str:
+def _agent_name_for(intent: str, message: str = "") -> str:
+    if intent == "UNCLASSIFIED" and is_closure_message(message):
+        return "ClosureAgent"
     return {
         "GREETING":         "GreetingAgent",
         "FAQ":              "FAQResponder",
