@@ -128,7 +128,8 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
 def node_load_context(state: SofiaState) -> dict:
     """Load session + clinic context from Supabase."""
     log.info("node.load_context", remote_jid=state["remote_jid"],
-             trace_id=state.get("trace_id"), clinic_id=state.get("clinic_id"))
+             trace_id=state.get("trace_id"), clinic_id=state.get("clinic_id"),
+             n8n_conversation_type=state.get("conversation_type"))
     try:
         ctx = load_session(
             remote_jid=state["remote_jid"],
@@ -137,6 +138,11 @@ def node_load_context(state: SofiaState) -> dict:
             instance_id=state.get("instance_id", ""),
             attribution_id=state.get("attribution_id"),
         )
+        log.info("node.load_context.result",
+                 trace_id=state.get("trace_id"),
+                 real_conversation_type=ctx.get("conversation_type"),
+                 history_length=len(ctx.get("history", [])),
+                 conversation_stage=ctx.get("conversation_stage"))
         return ctx
     except Exception as e:
         log.error("node.load_context.error", error=str(e), trace_id=state.get("trace_id"))
@@ -145,6 +151,7 @@ def node_load_context(state: SofiaState) -> dict:
             "customer_id": None,
             "history": [],
             "conversation_stage": "new",
+            "conversation_type": "first_contact",
             "patient_name": state.get("push_name"),
             "clinic_name": "Clínica",
             "assistant_name": "Sofia",

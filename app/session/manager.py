@@ -118,11 +118,16 @@ def load_session(remote_jid: str, clinic_id: str,
         clinic_name = clinic_result.data.get("clinic_name") or "Clínica"
         assistant_name = clinic_result.data.get("assistant_name") or "Sofia"
 
+    # Determine the real conversation type based on history loaded from DB.
+    # This overrides whatever n8n sent (n8n defaults to "first_contact" always).
+    real_conversation_type = "first_contact" if not history else "returning"
+
     return {
         "session_id": session_id,
         "customer_id": customer_id,
         "history": history,
         "conversation_stage": conversation_stage,
+        "conversation_type": real_conversation_type,
         "patient_name": patient_name,
         "clinic_name": clinic_name,
         "assistant_name": assistant_name,
