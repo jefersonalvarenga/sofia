@@ -42,13 +42,11 @@ class SchedulerAgent(dspy.Module):
         if not raw or str(raw).strip().lower() in ("null", "none", ""):
             return None
         cleaned = str(raw).strip()
-        # Try ISO formats
         for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]:
             try:
                 return datetime.strptime(cleaned, fmt).strftime("%Y-%m-%d %H:%M")
             except ValueError:
                 continue
-        # Extract via regex
         match = re.search(r"(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2})", cleaned)
         if match:
             return f"{match.group(1)} {match.group(2)}"
@@ -60,13 +58,52 @@ class SchedulerAgent(dspy.Module):
         return str(raw).strip()
 
     def _humanize_slot(self, slot: str) -> str:
-        """Convert 'YYYY-MM-DD HH:MM' to 'Qui, 26/02 às 09h (YYYY-MM-DD HH:MM)'."""
+        """Convert 'YYYY-MM-DD HH:MM' to 'Qui, 05/03 às 11h'."""
         try:
             dt = datetime.strptime(slot, "%Y-%m-%d %H:%M")
             dow = WEEKDAYS_PT[dt.weekday()]
-            return f"{dow}, {dt.day:02d}/{dt.month:02d} às {dt.hour:02d}h ({slot})"
+            return f"{dow}, {dt.day:02d}/{dt.month:02d} às {dt.hour:02d}h"
         except ValueError:
             return slot
+
+    def _detect_slot_from_message(
+        self, message: str, available_slots: List[str]
+    ) -> Optional[str]:
+        """
+        Pure-Python slot detection — matches natural language references to available slots.
+        Returns the ISO slot string if found, None otherwise.
+        Runs BEFORE and AFTER the LLM to guarantee slot selection is never missed.
+        """
+        msg = message.lower()
+
+        # Hour mentions: "as 11", "às 11h", "11h", "11:00", "11 horas"
+        for pattern in [
+            r"(?:as|às)\s*(\d{1,2})\s*h",
+            r"\b(\d{1,2})\s*h(?:oras?)?\b",
+            r"\b(\d{1,2}):00\b",
+        ]:
+            m = re.search(pattern, msg)
+            if m:
+                target_hour = int(m.group(1))
+                for slot in available_slots:
+                    try:
+                        if int(slot.split(" ")[1].split(":")[0]) == target_hour:
+                            return slot
+                    except Exception:
+                        continue
+
+        # Ordinal references: "primeiro/a", "segundo/a", "terceiro/a"
+        ordinals = [
+            (0, [r"\bprimeir[oa]\b", r"\b1[oa]\b"]),
+            (1, [r"\bsegund[oa]\b",  r"\b2[oa]\b"]),
+            (2, [r"\bterceiro[a]?\b", r"\b3[oa]\b"]),
+        ]
+        for idx, patterns in ordinals:
+            if any(re.search(p, msg) for p in patterns):
+                if idx < len(available_slots):
+                    return available_slots[idx]
+
+        return None
 
     def forward(
         self,
@@ -80,10 +117,18 @@ class SchedulerAgent(dspy.Module):
     ) -> Dict[str, Any]:
         history_str = self._format_history(history)
         slots_str = (
-            ", ".join(self._humanize_slot(s) for s in available_slots)
+            ", ".join(
+                f"{self._humanize_slot(s)} ({s})" for s in available_slots
+            )
             if available_slots else "Sem horários disponíveis"
         )
         services_str = ", ".join(services_list[:50]) if services_list else ""
+
+        # Pre-LLM: if patient is clearly selecting a slot, detect it in Python
+        # so the LLM only needs to generate the confirmation message.
+        pre_chosen: Optional[str] = None
+        if stage == "presenting_slots" and available_slots:
+            pre_chosen = self._detect_slot_from_message(patient_message, available_slots)
 
         try:
             result = self.process(
@@ -100,23 +145,14 @@ class SchedulerAgent(dspy.Module):
             chosen_slot = self._parse_slot(result.chosen_slot)
             service_requested = self._parse_service(result.service_requested)
 
-            # Guard: can't be booked without a chosen slot.
-            # Fallback: "às Xh" mention in history cross-referenced with available_slots.
-            # (Sofia shows friendly format only — ISO is never in patient-facing messages.)
+            # If Python detected a slot but LLM didn't advance, override.
+            if pre_chosen and new_stage != "booked":
+                chosen_slot = pre_chosen
+                new_stage = "booked"
+
+            # Guard: booked requires a chosen slot.
             if new_stage == "booked" and not chosen_slot:
-                for turn in reversed(history[-10:]):
-                    hour_match = re.search(r"às\s+(\d{1,2})h", turn.get("content", ""))
-                    if hour_match:
-                        target_hour = int(hour_match.group(1))
-                        for slot in available_slots:
-                            try:
-                                if int(slot.split(" ")[1].split(":")[0]) == target_hour:
-                                    chosen_slot = slot
-                                    break
-                            except Exception:
-                                continue
-                    if chosen_slot:
-                        break
+                chosen_slot = pre_chosen  # last resort
             if new_stage == "booked" and not chosen_slot:
                 new_stage = "presenting_slots"
 
