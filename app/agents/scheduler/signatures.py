@@ -5,10 +5,16 @@ class SlotExtractorSignature(dspy.Signature):
     """
     Extract the time slot the patient selected from their message.
     The patient may reference a slot in any language using any expression:
-    - A specific hour (numeric or written out)
-    - An ordinal reference (first, second, third / 1st, 2nd, 3rd)
-    - A relative reference (earliest, latest, the one at noon)
-    Match the reference to one of the available slots and return its ISO datetime.
+    - A specific hour (numeric or written out): "10", "ten o'clock", "dez horas"
+    - A day name or date: "Thursday", "Friday", "quinta", "sexta", "06/03"
+    - Day + hour combined: "Thursday at 10", "sexta às 10", "quinta de manhã"
+    - An ordinal: "first", "second", "primeiro", "segunda opção", "the last one"
+    - A relative: "earliest", "latest", "the noon one", "o mais cedo"
+
+    Each available slot shows a friendly label (e.g. "Qui, 05/03 às 09h") AND its ISO datetime.
+    Use both pieces to match the patient's reference — day abbreviations are language-specific
+    (Seg=Mon, Ter=Tue, Qua=Wed, Qui=Thu, Sex=Fri, Sáb=Sat, Dom=Sun).
+    When multiple slots share the same hour on different days, return the earliest.
     Return "null" if the message does not reference any slot.
     """
 
