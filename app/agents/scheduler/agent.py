@@ -7,7 +7,7 @@ import dspy
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from .signatures import SchedulerSignature
+from .signatures import SchedulerSignature, SlotExtractorSignature
 
 
 VALID_STAGES = {"collecting_service", "presenting_slots", "booked"}
@@ -19,6 +19,7 @@ class SchedulerAgent(dspy.Module):
     def __init__(self):
         super().__init__()
         self.process = dspy.ChainOfThought(SchedulerSignature)
+        self.slot_extractor = dspy.Predict(SlotExtractorSignature)
 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
         if not history:
@@ -66,44 +67,23 @@ class SchedulerAgent(dspy.Module):
         except ValueError:
             return slot
 
-    def _detect_slot_from_message(
-        self, message: str, available_slots: List[str]
+    def _extract_slot_with_llm(
+        self, patient_message: str, slots_str: str
     ) -> Optional[str]:
         """
-        Pure-Python slot detection — matches natural language references to available slots.
-        Returns the ISO slot string if found, None otherwise.
-        Runs BEFORE and AFTER the LLM to guarantee slot selection is never missed.
+        Focused LLM call (dspy.Predict, no CoT) to extract which slot the patient chose.
+        Handles informal references in any language: "as 9", "9 tá bom", "o primeiro",
+        "the first one", "a las 9", etc.
+        Returns the ISO slot string or None.
         """
-        msg = message.lower()
-
-        # Hour mentions: "as 11", "às 11h", "11h", "11:00", "11 horas"
-        for pattern in [
-            r"(?:as|às)\s*(\d{1,2})\s*h",
-            r"\b(\d{1,2})\s*h(?:oras?)?\b",
-            r"\b(\d{1,2}):00\b",
-        ]:
-            m = re.search(pattern, msg)
-            if m:
-                target_hour = int(m.group(1))
-                for slot in available_slots:
-                    try:
-                        if int(slot.split(" ")[1].split(":")[0]) == target_hour:
-                            return slot
-                    except Exception:
-                        continue
-
-        # Ordinal references: "primeiro/a", "segundo/a", "terceiro/a"
-        ordinals = [
-            (0, [r"\bprimeir[oa]\b", r"\b1[oa]\b"]),
-            (1, [r"\bsegund[oa]\b",  r"\b2[oa]\b"]),
-            (2, [r"\bterceiro[a]?\b", r"\b3[oa]\b"]),
-        ]
-        for idx, patterns in ordinals:
-            if any(re.search(p, msg) for p in patterns):
-                if idx < len(available_slots):
-                    return available_slots[idx]
-
-        return None
+        try:
+            result = self.slot_extractor(
+                patient_message=patient_message,
+                available_slots=slots_str,
+            )
+            return self._parse_slot(result.chosen_slot)
+        except Exception:
+            return None
 
     def forward(
         self,
@@ -124,11 +104,12 @@ class SchedulerAgent(dspy.Module):
         )
         services_str = ", ".join(services_list[:50]) if services_list else ""
 
-        # Pre-LLM: if patient is clearly selecting a slot, detect it in Python
-        # so the LLM only needs to generate the confirmation message.
+        # Pre-LLM: focused slot extractor runs first when patient may be selecting a slot.
+        # Uses a lightweight dspy.Predict (no CoT) — cheaper and faster than main process.
+        # Handles any language or informal expression ("as 9", "9 tá bom", "the first one").
         pre_chosen: Optional[str] = None
         if stage == "presenting_slots" and available_slots:
-            pre_chosen = self._detect_slot_from_message(patient_message, available_slots)
+            pre_chosen = self._extract_slot_with_llm(patient_message, slots_str)
 
         try:
             result = self.process(

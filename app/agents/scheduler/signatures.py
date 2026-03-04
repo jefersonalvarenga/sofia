@@ -1,6 +1,23 @@
 import dspy
 
 
+class SlotExtractorSignature(dspy.Signature):
+    """
+    Extract the time slot the patient selected from their message.
+    The patient may reference a slot in any language using any expression:
+    - A specific hour (numeric or written out)
+    - An ordinal reference (first, second, third / 1st, 2nd, 3rd)
+    - A relative reference (earliest, latest, the one at noon)
+    Match the reference to one of the available slots and return its ISO datetime.
+    Return "null" if the message does not reference any slot.
+    """
+
+    patient_message = dspy.InputField(desc="The patient's message in any language.")
+    available_slots = dspy.InputField(desc="Available slots listed as 'Friendly label (YYYY-MM-DD HH:MM)'.")
+
+    chosen_slot = dspy.OutputField(desc="ISO datetime (YYYY-MM-DD HH:MM) of the chosen slot, or 'null'.")
+
+
 class SchedulerSignature(dspy.Signature):
     """
     You are Sofia, a scheduling assistant for an aesthetic/medical clinic on WhatsApp.
