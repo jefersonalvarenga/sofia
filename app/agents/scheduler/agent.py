@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from .signatures import SchedulerSignature, SlotExtractorSignature
+from app.core.telemetry import log
 
 
 VALID_STAGES = {"collecting_service", "presenting_slots", "booked"}
@@ -104,16 +105,27 @@ class SchedulerAgent(dspy.Module):
         )
         services_str = ", ".join(services_list[:50]) if services_list else ""
 
+        log.info("scheduler.start", stage=stage, slots_count=len(available_slots),
+                 message_preview=patient_message[:60])
+
         # Pre-LLM: focused slot extractor runs first when patient may be selecting a slot.
         # Uses a lightweight dspy.Predict (no CoT) — cheaper and faster than main process.
         # Handles any language or informal expression ("as 9", "9 tá bom", "the first one").
         pre_chosen: Optional[str] = None
         if stage == "presenting_slots" and available_slots:
             pre_chosen = self._extract_slot_with_llm(patient_message, slots_str)
+            log.info("scheduler.slot_extractor", pre_chosen=pre_chosen,
+                     slots=slots_str, message=patient_message)
+        else:
+            log.info("scheduler.slot_extractor.skipped",
+                     reason="stage_not_presenting_slots" if stage != "presenting_slots" else "no_slots",
+                     stage=stage)
 
         # If SlotExtractor already identified the chosen slot, tell SchedulerSignature
         # we're already in "booked" stage so it generates a confirmation message (not a slot list).
         effective_stage = "booked" if pre_chosen else stage
+        log.info("scheduler.effective_stage", effective_stage=effective_stage,
+                 pre_chosen=pre_chosen)
 
         try:
             result = self.process(
@@ -130,8 +142,15 @@ class SchedulerAgent(dspy.Module):
             chosen_slot = self._parse_slot(result.chosen_slot)
             service_requested = self._parse_service(result.service_requested)
 
+            log.info("scheduler.llm_result", llm_stage=str(result.stage),
+                     llm_chosen_slot=str(result.chosen_slot),
+                     parsed_stage=new_stage, parsed_slot=chosen_slot,
+                     service=service_requested)
+
             # If Python detected a slot but LLM didn't advance, override.
             if pre_chosen and new_stage != "booked":
+                log.info("scheduler.override", reason="pre_chosen_overrides_llm",
+                         pre_chosen=pre_chosen, llm_stage=new_stage)
                 chosen_slot = pre_chosen
                 new_stage = "booked"
 
@@ -139,11 +158,16 @@ class SchedulerAgent(dspy.Module):
             if new_stage == "booked" and not chosen_slot:
                 chosen_slot = pre_chosen  # last resort
             if new_stage == "booked" and not chosen_slot:
+                log.warning("scheduler.guard.booked_without_slot",
+                            reason="downgrading to presenting_slots")
                 new_stage = "presenting_slots"
 
             # Guard: can't present slots without available_slots
             if new_stage == "presenting_slots" and not available_slots:
                 new_stage = "collecting_service"
+
+            log.info("scheduler.final", final_stage=new_stage, chosen_slot=chosen_slot,
+                     service=service_requested)
 
             if new_stage == "booked":
                 return {
@@ -165,7 +189,7 @@ class SchedulerAgent(dspy.Module):
             }
 
         except Exception as e:
-            print(f"SchedulerAgent error: {e}")
+            log.error("scheduler.error", error=str(e))
             return {
                 "messages": [{"type": "text", "content": "Vou verificar os horários disponíveis para você. Um momento!"}],
                 "conversation_stage": stage,
