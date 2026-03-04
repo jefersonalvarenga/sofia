@@ -188,11 +188,14 @@ def node_execute_agents(state: SofiaState) -> dict:
     session_id = state.get("session_id", "")
     language = state.get("language", "pt-BR")
 
-    # Suppress GREETING on returning messages — GreetingAgent only fires on first contact.
-    # On first message (empty history), keep GREETING alongside other intents.
-    _ACTION_INTENTS = {"SCHEDULE", "HUMAN_ESCALATION"}
+    # GREETING logic:
+    # - First contact (empty history): always inject GREETING regardless of Router output.
+    # - Returning messages: strip GREETING even if Router included it.
     history_is_empty = len(state.get("history", [])) == 0
-    if "GREETING" in detected_intents and not history_is_empty:
+    if history_is_empty:
+        if "GREETING" not in detected_intents:
+            detected_intents.append("GREETING")
+    else:
         detected_intents = [i for i in detected_intents if i != "GREETING"]
 
     from app.core.config import get_settings
