@@ -111,6 +111,10 @@ class SchedulerAgent(dspy.Module):
         if stage == "presenting_slots" and available_slots:
             pre_chosen = self._extract_slot_with_llm(patient_message, slots_str)
 
+        # If SlotExtractor already identified the chosen slot, tell SchedulerSignature
+        # we're already in "booked" stage so it generates a confirmation message (not a slot list).
+        effective_stage = "booked" if pre_chosen else stage
+
         try:
             result = self.process(
                 patient_message=patient_message,
@@ -119,7 +123,7 @@ class SchedulerAgent(dspy.Module):
                 services_list=services_str,
                 clinic_name=clinic_name,
                 patient_name=patient_name or "Paciente",
-                current_stage=stage,
+                current_stage=effective_stage,
             )
 
             new_stage = self._parse_stage(result.stage, stage)
