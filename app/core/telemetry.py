@@ -123,6 +123,7 @@ def build_agent_run(
         "status": status,
         "messages": result.get("messages", []),
         "data": result.get("data"),
+        "reasoning": result.get("reasoning"),
         "started_at": started_at,
         "duration_ms": round(duration_ms, 2),
         "prompt_tokens": tokens["prompt_tokens"],
@@ -144,6 +145,8 @@ def build_agent_run(
         trace_id=trace_id,
         clinic_id=clinic_id,
         reason=reason,
+        reasoning=result.get("reasoning"),
+        stage=result.get("conversation_stage"),
     )
 
     return agent_run
