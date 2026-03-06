@@ -494,8 +494,8 @@
     },
     "Loop Mensagens": {
       "main": [
-        [{ "node": "Verificar should_send", "type": "main", "index": 0 }],
-        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }]
+        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }],
+        [{ "node": "Verificar should_send", "type": "main", "index": 0 }]
       ]
     },
     "Verificar should_send": {
