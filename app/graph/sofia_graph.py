@@ -16,6 +16,7 @@ from app.session.models import SofiaState
 from app.session.manager import (
     load_session, save_session,
     load_services_context, load_business_rules,
+    load_style,
 )
 from app.core.telemetry import build_agent_run, log
 from app.agents.router.agent import SofiaRouterAgent
@@ -80,11 +81,13 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
     history = state.get("history", [])
 
     if intent == "GREETING":
+        clinic_style = state.get("clinic_style") or {}
         return _greeting_agent.forward(
             patient_name=patient_name,
             clinic_name=clinic_name,
             assistant_name=assistant_name,
             history_length=len(history),
+            greeting_example=clinic_style.get("greeting_example", ""),
         )
 
     if intent == "SCHEDULE":

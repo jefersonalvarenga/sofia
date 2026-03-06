@@ -70,6 +70,9 @@ class SofiaState(TypedDict):
     # ---- Routing ----
     detected_intents: List[str]      # sorted: informational first, CTA (most important) last
 
+    # ---- Clinic style (from la_blueprints or sf_clinic_business_rules) ----
+    clinic_style: Optional[Dict[str, Any]]  # tone, personality, greeting/closing examples, attendance_flow
+
     # ---- Marketing Attribution ----
     attribution_id: Optional[str]    # UUID from sf_ad_clicks (None for organic)
 
