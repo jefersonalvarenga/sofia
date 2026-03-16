@@ -16,7 +16,7 @@ from app.session.models import SofiaState
 from app.session.manager import (
     load_session, save_session,
     load_services_context, load_business_rules,
-    load_style,
+    load_style, load_resource_for_service,
 )
 from app.core.telemetry import build_agent_run, log
 from app.agents.router.agent import SofiaRouterAgent
@@ -96,7 +96,18 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
         current_stage = state.get("conversation_stage", "new")
         if current_stage not in {"collecting_service", "presenting_slots", "confirming", "booked"}:
             current_stage = "collecting_service"
-        return _scheduler_agent.forward(
+
+        # Resolver Resource antes de buscar slots.
+        # Quando service ainda nao conhecido (collecting_service), resource pode ser None —
+        # o scheduler continua funcionando (apresenta opcoes de servico primeiro).
+        resource = load_resource_for_service(state["clinic_id"])
+        resource_id = resource["id"] if resource else None
+        resource_type = resource["type"] if resource else "generic"
+        log.info("scheduler.resource_resolved",
+                 resource_id=resource_id, resource_type=resource_type,
+                 clinic_id=state["clinic_id"])
+
+        result = _scheduler_agent.forward(
             patient_message=state["message"],
             history=history,
             available_slots=state.get("available_slots", []),
@@ -105,6 +116,13 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
             stage=current_stage,
             services_list=service_names,
         )
+
+        # Injetar resource no data payload quando appointment foi agendado
+        if result.get("data") and result["data"].get("type") == "appointment":
+            result["data"]["resource_id"] = resource_id
+            result["data"]["resource_type"] = resource_type
+
+        return result
 
     if intent == "HUMAN_ESCALATION":
         return _escalation_agent.forward(
