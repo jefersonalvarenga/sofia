@@ -95,6 +95,8 @@ class SchedulerAgent(dspy.Module):
         patient_name: str,
         stage: str,
         services_list: Optional[List[str]] = None,
+        tone: str = "",
+        personality_traits: List[str] = None,
     ) -> Dict[str, Any]:
         history_str = self._format_history(history)
         slots_str = (
@@ -104,6 +106,7 @@ class SchedulerAgent(dspy.Module):
             if available_slots else "Sem horários disponíveis"
         )
         services_str = ", ".join(services_list[:50]) if services_list else ""
+        traits_str = ", ".join(personality_traits) if personality_traits else ""
 
         log.info("scheduler.start", stage=stage, slots_count=len(available_slots),
                  message_preview=patient_message[:60])
@@ -136,6 +139,8 @@ class SchedulerAgent(dspy.Module):
                 clinic_name=clinic_name,
                 patient_name=patient_name or "Paciente",
                 current_stage=effective_stage,
+                clinic_tone=tone,
+                personality_traits=traits_str,
             )
 
             new_stage = self._parse_stage(result.stage, stage)

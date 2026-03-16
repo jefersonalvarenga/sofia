@@ -80,6 +80,11 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
     assistant_name = state.get("assistant_name", "Sofia")
     history = state.get("history", [])
 
+    clinic_style = state.get("clinic_style") or {}
+    tone = clinic_style.get("tone", "")
+    personality_traits = clinic_style.get("personality_traits", [])
+    attendance_flow = clinic_style.get("attendance_flow", [])
+
     if intent == "GREETING":
         clinic_style = state.get("clinic_style") or {}
         return _greeting_agent.forward(
@@ -115,6 +120,8 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
             patient_name=patient_name,
             stage=current_stage,
             services_list=service_names,
+            tone=tone,
+            personality_traits=personality_traits,
         )
 
         # Injetar resource no data payload quando appointment foi agendado
@@ -148,6 +155,9 @@ def _call_agent(intent: str, state: SofiaState) -> Dict[str, Any]:
         patient_name=patient_name,
         services_context=services_ctx,
         business_rules=business_rules,
+        tone=tone,
+        personality_traits=personality_traits,
+        attendance_flow=attendance_flow,
     )
 
 
