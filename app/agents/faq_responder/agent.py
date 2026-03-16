@@ -21,8 +21,13 @@ class FAQResponderAgent(dspy.Module):
         patient_name: str,
         services_context: str,
         business_rules: str,
+        tone: str = "",
+        personality_traits: List[str] = None,
+        attendance_flow: List[str] = None,
     ) -> Dict[str, Any]:
         history_str = self._format_history(history)
+        traits_str = ", ".join(personality_traits) if personality_traits else ""
+        flow_str = " → ".join(attendance_flow) if attendance_flow else ""
 
         try:
             result = self.process(
@@ -32,6 +37,9 @@ class FAQResponderAgent(dspy.Module):
                 patient_name=patient_name or "Paciente",
                 services_context=services_context,
                 business_rules=business_rules,
+                clinic_tone=tone,
+                personality_traits=traits_str,
+                attendance_flow=flow_str,
             )
             return {
                 "messages": [{"type": "text", "content": str(result.response_message).strip()}],

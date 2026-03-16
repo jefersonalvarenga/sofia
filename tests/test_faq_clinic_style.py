@@ -11,17 +11,17 @@ import pytest
 class TestFAQResponderSignatureFields:
     def test_clinic_tone_in_signature_fields(self):
         from app.agents.faq_responder.signatures import FAQResponderSignature
-        fields = list(FAQResponderSignature.signature.fields.keys())
+        fields = list(FAQResponderSignature.model_fields.keys())
         assert "clinic_tone" in fields, f"clinic_tone missing from FAQResponderSignature fields: {fields}"
 
     def test_personality_traits_in_signature_fields(self):
         from app.agents.faq_responder.signatures import FAQResponderSignature
-        fields = list(FAQResponderSignature.signature.fields.keys())
+        fields = list(FAQResponderSignature.model_fields.keys())
         assert "personality_traits" in fields, f"personality_traits missing from FAQResponderSignature fields: {fields}"
 
     def test_attendance_flow_in_signature_fields(self):
         from app.agents.faq_responder.signatures import FAQResponderSignature
-        fields = list(FAQResponderSignature.signature.fields.keys())
+        fields = list(FAQResponderSignature.model_fields.keys())
         assert "attendance_flow" in fields, f"attendance_flow missing from FAQResponderSignature fields: {fields}"
 
 
