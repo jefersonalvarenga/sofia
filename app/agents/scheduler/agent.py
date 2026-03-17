@@ -68,6 +68,45 @@ class SchedulerAgent(dspy.Module):
         except ValueError:
             return slot
 
+    def _build_refusal_message(self, services_list: List[str], clinic_name: str) -> str:
+        return (
+            f"Esse serviço não está disponível na {clinic_name}. "
+            f"Posso te ajudar a agendar: {', '.join(services_list[:10])} \U0001f60a"
+        )
+
+    def _extract_named_service(self, patient_message: str, services_list: List[str]) -> Optional[str]:
+        """
+        Returns the matched service name if found (case-insensitive substring),
+        "UNKNOWN" if the message contains a clear unmatched service-like noun,
+        or None if uncertain (let LLM handle it).
+        """
+        msg_lower = patient_message.lower()
+
+        # Check if any known service is mentioned
+        for service in services_list:
+            if service.lower() in msg_lower:
+                return service  # known service — guard passes
+
+        # Look for an apparent service noun: capitalized word(s) not in stopwords
+        STOPWORDS = {
+            "quero", "agendar", "gostaria", "fazer", "uma", "para", "um", "de",
+            "da", "do", "me", "eu", "por", "favor", "marcar", "consulta",
+            "horario", "horário", "disponivel", "disponível", "ola", "olá",
+            "oi", "bom", "dia", "tarde", "noite", "pode", "consegue",
+        }
+        # Tokenize: keep words of 3+ chars, strip punctuation
+        import re as _re
+        tokens = _re.findall(r"[A-Za-záéíóúãõâêîôûàèìòùçÁÉÍÓÚÃÕÂÊÎÔÛÀÈÌÒÙÇ]{3,}", patient_message)
+        meaningful = [t for t in tokens if t.lower() not in STOPWORDS]
+
+        # If there are meaningful tokens that look like a service name
+        # (i.e., contains at least one word with uppercase initial in original)
+        service_like = [t for t in meaningful if t[0].isupper()]
+        if service_like and services_list:
+            return "UNKNOWN"
+
+        return None  # uncertain — pass to LLM
+
     def _extract_slot_with_llm(
         self, patient_message: str, slots_str: str
     ) -> Optional[str]:
@@ -110,6 +149,18 @@ class SchedulerAgent(dspy.Module):
 
         log.info("scheduler.start", stage=stage, slots_count=len(available_slots),
                  message_preview=patient_message[:60])
+
+        # Service guard: refuse unknown services before any LLM call
+        if stage == "collecting_service" and services_list:
+            detected = self._extract_named_service(patient_message, services_list)
+            if detected == "UNKNOWN":
+                log.info("scheduler.service_guard.blocked", message_preview=patient_message[:60])
+                return {
+                    "messages": [{"type": "text", "content": self._build_refusal_message(services_list, clinic_name)}],
+                    "conversation_stage": "collecting_service",
+                    "reasoning": "Service requested is not in clinic's service list — hard block applied.",
+                    "data": None,
+                }
 
         # Pre-LLM: focused slot extractor runs first when patient may be selecting a slot.
         # Uses a lightweight dspy.Predict (no CoT) — cheaper and faster than main process.
