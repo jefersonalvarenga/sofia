@@ -2,6 +2,7 @@
 FAQResponderAgent — answers patient questions about clinic services, prices, etc.
 """
 
+import json
 import dspy
 from typing import List, Dict, Any
 
@@ -12,6 +13,14 @@ class FAQResponderAgent(dspy.Module):
     def __init__(self):
         super().__init__()
         self.process = dspy.ChainOfThought(FAQResponderSignature)
+
+    def _parse_service_names(self, services_context: str) -> str:
+        try:
+            ctx = json.loads(services_context)
+            names = [s.get("name", "") for s in ctx.get("services", []) if s.get("name")]
+            return ", ".join(names)
+        except Exception:
+            return ""
 
     def forward(
         self,
@@ -28,6 +37,7 @@ class FAQResponderAgent(dspy.Module):
         history_str = self._format_history(history)
         traits_str = ", ".join(personality_traits) if personality_traits else ""
         flow_str = " → ".join(attendance_flow) if attendance_flow else ""
+        service_names_str = self._parse_service_names(services_context)
 
         try:
             result = self.process(
@@ -40,6 +50,7 @@ class FAQResponderAgent(dspy.Module):
                 clinic_tone=tone,
                 personality_traits=traits_str,
                 attendance_flow=flow_str,
+                service_names_list=service_names_str,
             )
             return {
                 "messages": [{"type": "text", "content": str(result.response_message).strip()}],

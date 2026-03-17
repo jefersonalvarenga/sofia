@@ -30,6 +30,10 @@ class FAQResponderSignature(dspy.Signature):
     - Keep responses under 300 characters when possible.
     - Respond in the same language as the patient (usually pt-BR).
 
+    HARD RULE — Service gating: If the patient asks about a service or price NOT in service_names_list,
+    respond ONLY with: "Esse serviço não está disponível. Posso te ajudar com: {service_names_list}."
+    Do NOT invent, approximate, or partially answer for unlisted services or prices.
+
     Clinic style: Always match the clinic_tone and personality_traits provided.
     Reference attendance_flow steps when guiding the patient through the process.
     """
@@ -43,6 +47,7 @@ class FAQResponderSignature(dspy.Signature):
     clinic_tone = dspy.InputField(desc="Clinic's communication tone (e.g. 'Informal', 'Elegante'). Match this tone in your response.")
     personality_traits = dspy.InputField(desc="Comma-separated personality traits (e.g. 'empática, discreta'). Embody these traits.")
     attendance_flow = dspy.InputField(desc="Ordered process steps the clinic follows (e.g. 'Apresentar portfólio → Direcionar para avaliação'). Reference these steps when guiding the patient.")
+    service_names_list = dspy.InputField(desc="Comma-separated list of service names registered for this clinic. You may ONLY discuss services and prices in this list. Any other service does not exist for this clinic.")
 
     response_message = dspy.OutputField(desc="The response message to send to the patient via WhatsApp.")
     reasoning = dspy.OutputField(desc="Brief reasoning (internal, not shown to patient).")
