@@ -86,7 +86,14 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             self._block_ip(client_ip, minutes=60)
             return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
 
-        if path.startswith("/v1/") and path != "/v1/health":
+        # Public routes that authenticate by other means (or are open by design):
+        #   - /v1/health: liveness probe.
+        #   - /v1/iris/webhook/*: Evolution API does not send custom headers; the
+        #     handler authenticates by resolving instance_name -> clinic_id and
+        #     responds 200 on unknown instances to avoid retry storms.
+        public_paths = (path == "/v1/health") or path.startswith("/v1/iris/webhook/")
+
+        if path.startswith("/v1/") and not public_paths:
             required_key = _get_api_key()
             if required_key:
                 provided_key = request.headers.get("X-API-Key", "")

@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings, init_dspy
 from app.core.security import SecurityMiddleware, AccessLogMiddleware
 from app.core.telemetry import log
+from app.iris.webhook import router as iris_router
 from app.session.models import SofiaRequest, SofiaResponse
 
 # ============================================================================
@@ -55,6 +56,9 @@ async def startup_event():
 # ============================================================================
 # Endpoints
 # ============================================================================
+
+app.include_router(iris_router)
+
 
 @app.get("/v1/health")
 async def health():
