@@ -92,7 +92,7 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks)
     log.info(
         "iris.webhook.received",
         trace_id=trace_id,
-        event=raw.get("event") if isinstance(raw, dict) else None,
+        payload_event=raw.get("event") if isinstance(raw, dict) else None,
         instance=raw.get("instance") if isinstance(raw, dict) else None,
     )
 
