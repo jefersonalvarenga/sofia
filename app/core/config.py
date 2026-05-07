@@ -34,6 +34,10 @@ class EasyScaleSettings(BaseSettings):
     # Sofia
     sofia_version: str = Field(default="1.0", env="SOFIA_VERSION")
 
+    # Evolution API (WhatsApp gateway, Iris pipeline)
+    evolution_api_url: str = Field(default="", env="EVOLUTION_API_URL")
+    evolution_api_key: str = Field(default="", env="EVOLUTION_API_KEY")
+
     def get_llm_api_key(self) -> Optional[str]:
         if self.dspy_provider == "openai":
             return self.openai_api_key
