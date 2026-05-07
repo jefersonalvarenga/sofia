@@ -56,6 +56,30 @@ def extract_tokens() -> Dict[str, int]:
         return empty
 
 
+def extract_tokens_anthropic(response: Any) -> Dict[str, int]:
+    """
+    Extract token usage directly from an Anthropic SDK Message response.
+    Anthropic uses input_tokens/output_tokens; we normalize to the same shape
+    as extract_tokens() so downstream agent_run dicts stay uniform.
+    """
+    empty = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    if not response:
+        return empty
+    try:
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return empty
+        prompt = int(getattr(usage, "input_tokens", 0) or 0)
+        completion = int(getattr(usage, "output_tokens", 0) or 0)
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+        }
+    except Exception:
+        return empty
+
+
 # ============================================================================
 # Agent run wrapper
 # ============================================================================
