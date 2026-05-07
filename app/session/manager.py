@@ -378,6 +378,7 @@ def save_session(state: SofiaState) -> None:
                 "prompt_tokens": run.get("prompt_tokens", 0),
                 "completion_tokens": run.get("completion_tokens", 0),
                 "total_tokens": run.get("total_tokens", 0),
+                "cost_usd": run.get("cost_usd", "0"),
                 "trace_id": run.get("trace_id"),
                 "language": run.get("language", "pt-BR"),
                 "clinic_id": state.get("clinic_id"),

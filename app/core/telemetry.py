@@ -8,6 +8,8 @@ import structlog
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
+from app.core.pricing import compute_cost
+
 # ============================================================================
 # Structured logger
 # ============================================================================
@@ -110,12 +112,20 @@ def build_agent_run(
 
     # Only read new token entries added during this call
     tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    model_name = ""
     try:
         lm = dspy.settings.lm
         if lm and hasattr(lm, "history") and len(lm.history) > history_len_before:
             tokens = extract_tokens()
+            model_name = getattr(lm, "model", "") or ""
     except Exception:
         pass
+
+    cost_usd = compute_cost(
+        model_name,
+        tokens["prompt_tokens"],
+        tokens["completion_tokens"],
+    )
 
     agent_run = {
         "agent": agent_name,
@@ -130,6 +140,7 @@ def build_agent_run(
         "prompt_tokens": tokens["prompt_tokens"],
         "completion_tokens": tokens["completion_tokens"],
         "total_tokens": tokens["total_tokens"],
+        "cost_usd": str(cost_usd),
         "trace_id": trace_id,
         "clinic_id": clinic_id,
         "session_id": session_id,
@@ -143,6 +154,7 @@ def build_agent_run(
         status=status,
         duration_ms=round(duration_ms, 2),
         total_tokens=tokens["total_tokens"],
+        cost_usd=str(cost_usd),
         trace_id=trace_id,
         clinic_id=clinic_id,
         reason=reason,
