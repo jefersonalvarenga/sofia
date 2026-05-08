@@ -6,6 +6,8 @@ Supabase client and pipeline mocked. Real e2e + idempotency-against-Postgres
 smoke lives in C10 ([EASAA-31](../../../EASAA/issues/EASAA-31)).
 """
 
+from __future__ import annotations
+
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
