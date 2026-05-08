@@ -386,6 +386,7 @@ def save_session(state: SofiaState) -> None:
                 "data": run.get("data"),
                 "started_at": run.get("started_at"),
                 "duration_ms": run.get("duration_ms"),
+                "status": run.get("status", "success"),
             }).execute()
     except Exception as e:
         print(f"[save_session] sf_agent_activations insert failed: {e}")
