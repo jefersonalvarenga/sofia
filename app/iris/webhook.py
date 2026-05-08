@@ -39,7 +39,7 @@ def _allowed_jids() -> Set[str]:
 def _resolve_clinic_id(instance_name: str) -> Optional[str]:
     supabase = get_supabase()
     result = (
-        supabase.table("sf_instance_clinic_map")
+        supabase.table("sf_instance_clinic_map")  # tenant-lint: exempt — bootstrap; this query resolves clinic_id
         .select("clinic_id")
         .eq("instance_name", instance_name)
         .maybe_single()

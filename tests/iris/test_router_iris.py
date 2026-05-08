@@ -298,3 +298,36 @@ class TestExtractTokensAnthropic:
 
         response = MagicMock(spec=[])  # no usage attr
         assert extract_tokens_anthropic(response)["total_tokens"] == 0
+
+
+# ─── C10 deterministic intent table ────────────────────────────────────────────
+#
+# C10 ([EASAA-31](../../EASAA/issues/EASAA-31)) — fixed table proving the
+# IrisRouter contract for the greeting smoke. The Anthropic call is mocked so
+# the assertion is on the agent's normalization + handling, not on a live LLM.
+
+
+class TestC10IntentTable:
+    """'oi' → GREETING, 'agendar' → SCHEDULE, 'blá blá' → UNCLASSIFIED."""
+
+    @pytest.mark.parametrize(
+        "message, llm_intents, expected",
+        [
+            ("oi", ["GREETING"], ["GREETING"]),
+            ("quero agendar limpeza", ["SCHEDULE"], ["SCHEDULE"]),
+            # Unparseable LLM output must normalize to UNCLASSIFIED.
+            ("blá blá", [], ["UNCLASSIFIED"]),
+        ],
+        ids=["greeting", "schedule", "unclassified"],
+    )
+    def test_router_intent_table(self, message, llm_intents, expected):
+        client = MagicMock()
+        client.messages.create.return_value = _make_tool_use_response({
+            "detected_intents": llm_intents,
+            "language": "pt-BR",
+            "reasoning": "c10 fixture",
+            "confidence": 0.91 if llm_intents else 0.1,
+        })
+        agent = IrisRouterAgent(client=client)
+        result = agent.forward(message, [], "new")
+        assert result["detected_intents"] == expected
