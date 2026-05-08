@@ -25,8 +25,9 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from app.agents.greeting.agent import GreetingAgent
-from app.agents.router.agent_iris import IrisRouterAgent
+from app.agents.router.agent_iris import IRIS_ROUTER_MODEL, IrisRouterAgent
 from app.core.config import get_settings
+from app.core.pricing import compute_cost
 from app.core.telemetry import build_agent_run, extract_tokens_anthropic, log
 from app.iris.evolution_client import (
     EvolutionAPIError,
@@ -175,11 +176,19 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
 
     # IrisRouterAgent uses the Anthropic SDK directly. build_agent_run()
     # only knows how to read DSPy LM history, so we patch in real token
-    # usage from the router's stashed last_response.
+    # usage from the router's stashed last_response and recompute the cost
+    # against the Anthropic pricing table.
     tokens = extract_tokens_anthropic(_router_agent.last_response)
     run["prompt_tokens"] = tokens["prompt_tokens"]
     run["completion_tokens"] = tokens["completion_tokens"]
     run["total_tokens"] = tokens["total_tokens"]
+    run["cost_usd"] = str(
+        compute_cost(
+            IRIS_ROUTER_MODEL,
+            tokens["prompt_tokens"],
+            tokens["completion_tokens"],
+        )
+    )
 
     data = run.get("data") or {}
     detected_intents = data.get("detected_intents") or ["UNCLASSIFIED"]
