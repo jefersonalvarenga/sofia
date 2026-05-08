@@ -27,7 +27,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # Auto-resolve clinic_id via instance_clinic_map if invalid
     if (not clinic_id or clinic_id == "unknown") and instance_id:
         map_result = (
-            supabase.table("sf_instance_clinic_map")
+            supabase.table("sf_instance_clinic_map")  # tenant-lint: exempt — bootstrap; this query resolves clinic_id
             .select("clinic_id")
             .eq("instance_name", instance_id)
             .maybe_single()
@@ -76,7 +76,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # causes PostgREST to return HTTP 406 when 0 rows match, breaking the flow.
     # Use .limit(1).execute() instead — returns an empty list safely.
     session_result = (
-        supabase.table("sf_sessions")
+        supabase.table("sf_sessions")  # tenant-lint: exempt — session_id is composite ({remote_jid}:{clinic_id})
         .select("session_id, history, conversation_stage")
         .eq("session_id", session_id)
         .limit(1)
