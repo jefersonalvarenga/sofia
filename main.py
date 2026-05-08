@@ -48,6 +48,7 @@ async def startup_event():
     try:
         init_dspy()
         from app.graph.sofia_graph import sofia_graph  # noqa: F401
+        from app.iris.pipeline import iris_graph  # noqa: F401
         settings = get_settings()
         log.info("sofia.ready", version=settings.sofia_version)
     except Exception as e:
