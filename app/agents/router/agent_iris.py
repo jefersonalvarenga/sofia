@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from anthropic import Anthropic
 from pydantic import BaseModel, Field
 
+from app.core.telemetry import log
+
 from .signatures import SofiaIntentType
 
 
@@ -191,14 +193,14 @@ class IrisRouterAgent:
             reasoning = parsed.reasoning.strip()
             confidence = max(0.0, min(1.0, float(parsed.confidence)))
         except Exception as e:
-            print(f"IrisRouterAgent error: {e}")
             self.last_response = None
-            return {
-                "detected_intents": [SofiaIntentType.UNCLASSIFIED.value],
-                "language": "pt-BR",
-                "reasoning": f"Erro no roteamento: {e}",
-                "confidence": 0.0,
-            }
+            log.error(
+                "iris.router.failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                model=self.model,
+            )
+            raise
 
         return {
             "detected_intents": detected_intents,

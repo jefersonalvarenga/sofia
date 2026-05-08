@@ -186,41 +186,38 @@ class TestForward:
         result = router.forward("preço? quero falar com atendente", [], "new")
         assert result["detected_intents"][-1] == "HUMAN_ESCALATION"
 
-    def test_anthropic_exception_returns_unclassified(self, router):
+    def test_anthropic_exception_propagates(self, router):
+        # Router must NOT swallow API failures — telemetry needs the real error
+        # so build_agent_run records status="error" with the cause.
         router.client.messages.create.side_effect = RuntimeError("API timeout")
-        result = router.forward("oi", [], "new")
-        assert result["detected_intents"] == ["UNCLASSIFIED"]
-        assert result["language"] == "pt-BR"
-        assert result["confidence"] == pytest.approx(0.0)
-        assert "Erro" in result["reasoning"]
+        with pytest.raises(RuntimeError, match="API timeout"):
+            router.forward("oi", [], "new")
+        assert router.last_response is None
 
-    def test_missing_tool_use_returns_unclassified(self, router):
+    def test_missing_tool_use_propagates(self, router):
         router.client.messages.create.return_value = _make_text_only_response()
-        result = router.forward("oi", [], "new")
-        assert result["detected_intents"] == ["UNCLASSIFIED"]
-        assert result["confidence"] == pytest.approx(0.0)
+        with pytest.raises(ValueError, match="classify_intent tool call missing"):
+            router.forward("oi", [], "new")
 
-    def test_invalid_intent_payload_dropped(self, router):
-        # BANANA is not a valid IntentEnum → pydantic validation fails → fallback
+    def test_invalid_intent_payload_propagates(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
             "detected_intents": ["BANANA"],
             "language": "pt-BR",
             "reasoning": "?",
             "confidence": 0.5,
         })
-        result = router.forward("hmm", [], "new")
-        assert result["detected_intents"] == ["UNCLASSIFIED"]
+        with pytest.raises(Exception):  # pydantic ValidationError
+            router.forward("hmm", [], "new")
 
-    def test_confidence_out_of_range_clamped(self, router):
-        # Pydantic enforces 0..1 — out-of-range raises and the agent returns fallback.
+    def test_confidence_out_of_range_propagates(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
             "detected_intents": ["GREETING"],
             "language": "pt-BR",
             "reasoning": "ok",
             "confidence": 1.5,
         })
-        result = router.forward("oi", [], "new")
-        assert result["detected_intents"] == ["UNCLASSIFIED"]
+        with pytest.raises(Exception):  # pydantic ValidationError on confidence
+            router.forward("oi", [], "new")
 
     def test_history_passed_in_user_prompt(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
@@ -315,8 +312,8 @@ class TestC10IntentTable:
         [
             ("oi", ["GREETING"], ["GREETING"]),
             ("quero agendar limpeza", ["SCHEDULE"], ["SCHEDULE"]),
-            # Unparseable LLM output must normalize to UNCLASSIFIED.
-            ("blá blá", [], ["UNCLASSIFIED"]),
+            # When the LLM produces a valid UNCLASSIFIED, surface it directly.
+            ("blá blá", ["UNCLASSIFIED"], ["UNCLASSIFIED"]),
         ],
         ids=["greeting", "schedule", "unclassified"],
     )
@@ -326,7 +323,7 @@ class TestC10IntentTable:
             "detected_intents": llm_intents,
             "language": "pt-BR",
             "reasoning": "c10 fixture",
-            "confidence": 0.91 if llm_intents else 0.1,
+            "confidence": 0.91,
         })
         agent = IrisRouterAgent(client=client)
         result = agent.forward(message, [], "new")
