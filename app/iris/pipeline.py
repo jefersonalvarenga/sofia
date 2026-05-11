@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from app.agents.greeting.agent import GreetingAgent
+from app.agents.human_escalation.agent import HumanEscalationAgent
 from app.agents.knowledge.agent import KnowledgeSpecialist
 from app.agents.router.agent_iris import IRIS_ROUTER_MODEL, IrisRouterAgent
 from app.core.config import get_settings
@@ -45,6 +46,7 @@ from app.iris.evolution_client import (
 )
 from app.iris.schemas import ParsedMessage
 from app.session.manager import load_session, save_session
+from services.iris.webhook import notify_receptionist
 
 
 UNKNOWN_FALLBACK_TEXT = "Ainda estou aprendendo. Em breve te ajudo melhor 😊"
@@ -80,6 +82,7 @@ class IrisState(TypedDict, total=False):
     customer_id: Optional[str]
     clinic_style: Optional[Dict[str, Any]]
     attribution_id: Optional[str]
+    paused: bool
 
     # ---- Routing ----
     intents: List[Dict[str, str]]
@@ -103,6 +106,7 @@ class IrisState(TypedDict, total=False):
 _router_agent = IrisRouterAgent()
 _greeting_agent = GreetingAgent()
 _knowledge_agent = KnowledgeSpecialist()
+_escalation_agent = HumanEscalationAgent()
 
 
 # ============================================================================
@@ -124,13 +128,16 @@ def node_load_context(state: IrisState) -> Dict[str, Any]:
             push_name=state.get("push_name"),
             instance_id=state.get("instance_name", ""),
         )
+        is_paused = bool(ctx.get("paused", False))
         log.info(
             "iris.node.load_context.ok",
             trace_id=state.get("trace_id"),
             session_id=ctx.get("session_id"),
             history_length=len(ctx.get("history", [])),
             conversation_stage=ctx.get("conversation_stage"),
+            paused=is_paused,
         )
+        ctx["paused"] = is_paused
         return ctx
     except Exception as exc:
         # Graceful fallback so the pipeline still produces a fallback reply
@@ -150,6 +157,7 @@ def node_load_context(state: IrisState) -> Dict[str, Any]:
             "clinic_name": "Clínica",
             "assistant_name": "Iris",
             "clinic_style": None,
+            "paused": False,
         }
 
 
@@ -268,6 +276,26 @@ def _call_knowledge(state: IrisState, scope_text: str) -> Dict[str, Any]:
     )
 
 
+def _call_escalation(state: IrisState, scope_text: str) -> Dict[str, Any]:
+    patient_name = (
+        state.get("patient_name")
+        or state.get("push_name")
+        or "Paciente"
+    )
+    result = _escalation_agent.forward(
+        patient_name=patient_name,
+        assistant_name=state.get("assistant_name", "Iris"),
+        clinic_name=state.get("clinic_name", "Clínica"),
+    )
+    notify_receptionist(
+        tenant_id=state.get("clinic_id", ""),
+        conversation_id=state.get("remote_jid", ""),
+        patient_name=patient_name,
+        trigger="explicit_request",
+    )
+    return result
+
+
 def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return {
         "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
@@ -283,6 +311,7 @@ def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
 SPECIALIST_REGISTRY: Dict[str, tuple[str, Callable[[IrisState, str], Dict[str, Any]]]] = {
     "GREETING": ("GreetingAgent", _call_greeting),
     "FAQ": ("KnowledgeSpecialist", _call_knowledge),
+    "HUMAN_ESCALATION": ("HumanEscalation", _call_escalation),
 }
 
 
@@ -493,7 +522,11 @@ workflow.add_node("save_session", node_save_session)
 workflow.add_node("send_evolution", node_send_evolution)
 
 workflow.set_entry_point("load_context")
-workflow.add_edge("load_context", "detect_intents")
+workflow.add_conditional_edges(
+    "load_context",
+    lambda state: END if state.get("paused") else "detect_intents",
+    {"detect_intents": "detect_intents", END: END},
+)
 workflow.add_edge("detect_intents", "dispatch_specialists")
 workflow.add_edge("dispatch_specialists", "aggregate_response")
 workflow.add_edge("aggregate_response", "save_session")

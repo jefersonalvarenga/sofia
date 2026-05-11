@@ -77,7 +77,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # Use .limit(1).execute() instead — returns an empty list safely.
     session_result = (
         supabase.table("sf_sessions")  # tenant-lint: exempt — session_id is composite ({remote_jid}:{clinic_id})
-        .select("session_id, history, conversation_stage")
+        .select("session_id, history, conversation_stage, paused")
         .eq("session_id", session_id)
         .limit(1)
         .execute()
@@ -85,6 +85,7 @@ def load_session(remote_jid: str, clinic_id: str,
 
     history: list = []
     conversation_stage: str = "new"
+    paused: bool = False
     patient_name: Optional[str] = push_name
 
     if session_result.data and len(session_result.data) > 0:
@@ -92,6 +93,7 @@ def load_session(remote_jid: str, clinic_id: str,
         raw_history = row.get("history") or []
         history = raw_history if isinstance(raw_history, list) else []
         conversation_stage = row.get("conversation_stage") or "new"
+        paused = bool(row.get("paused", False))
     else:
         supabase.table("sf_sessions").insert(
             {
@@ -135,6 +137,7 @@ def load_session(remote_jid: str, clinic_id: str,
         "assistant_name": assistant_name,
         "attribution_id": attribution_id,  # passed through state to _persist_appointment
         "clinic_style": clinic_style,
+        "paused": paused,
     }
 
 
@@ -355,12 +358,21 @@ def save_session(state: SofiaState) -> None:
             conversation_stage = last_stage
 
     # 1. Update sf_sessions
-    supabase.table("sf_sessions").update(
-        {
-            "history": new_history,
-            "conversation_stage": conversation_stage,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+    update_payload: Dict[str, Any] = {
+        "history": new_history,
+        "conversation_stage": conversation_stage,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Escalation sets paused=true on the conversation — subsequent messages
+    # from this conversation are skipped until a human reactivates.
+    for run in agent_runs:
+        data = run.get("data")
+        if data and data.get("type") == "escalation":
+            update_payload["paused"] = True
+            break
+
+    supabase.table("sf_sessions").update(update_payload
     ).eq("session_id", state["session_id"]).execute()
 
     # 2. Insert one sf_agent_activations row per agent_run
