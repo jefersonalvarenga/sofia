@@ -117,10 +117,16 @@ def test_smoke_botox_gravida():
     assert "avaliação presencial" in answer_text.lower(), (
         f"resposta deve mencionar avaliação presencial; got: {answer_text!r}"
     )
+    assert "[SCHEDULE_NEXT]" not in answer_text, (
+        "routing hint não deve aparecer no texto da mensagem"
+    )
 
     data = result["data"]
     assert data["sensitive_flag"] is True, "sensitive_flag deve ser True para gestante"
     assert data["requires_consultation"] is True, "requires_consultation deve ser True"
+    assert data["routing_hint"] == "SCHEDULE_NEXT", (
+        f"routing_hint deve ser SCHEDULE_NEXT para query sensível; got: {data.get('routing_hint')!r}"
+    )
     assert result["conversation_stage"] == "knowledge"
 
 
@@ -150,6 +156,9 @@ def test_non_sensitive_botox_duration():
     data = result["data"]
     assert data["sensitive_flag"] is False
     assert data["requires_consultation"] is False
+    assert data["routing_hint"] is None, (
+        f"routing_hint deve ser None para query não-sensível; got: {data.get('routing_hint')!r}"
+    )
     assert "4 a 6 meses" in result["messages"][0]["content"]
 
 
@@ -180,6 +189,12 @@ def test_sensitive_guard_overrides_llm():
     data = result["data"]
     assert data["sensitive_flag"] is True, "guard deve forçar sensitive_flag=True"
     assert data["requires_consultation"] is True
+    assert data["routing_hint"] == "SCHEDULE_NEXT", (
+        f"guard deve forçar routing_hint=SCHEDULE_NEXT; got: {data.get('routing_hint')!r}"
+    )
+    assert "[SCHEDULE_NEXT]" not in result["messages"][0]["content"], (
+        "routing hint não deve aparecer no texto da mensagem"
+    )
 
 
 # ---------------------------------------------------------------------------

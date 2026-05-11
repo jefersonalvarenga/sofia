@@ -264,13 +264,6 @@ class KnowledgeSpecialist:
                 sensitive_flag=False,
             )
 
-        text = out.answer
-        if out.sensitive_flag:
-            # Signal to pipeline that next turn should route to Scheduler.
-            routing_hint = " [SCHEDULE_NEXT]"
-            if not text.endswith(routing_hint):
-                text = text + routing_hint
-
         log.info(
             "knowledge.forward.ok",
             model=model,
@@ -289,6 +282,7 @@ class KnowledgeSpecialist:
                 "sources": out.sources,
                 "requires_consultation": out.requires_consultation,
                 "sensitive_flag": out.sensitive_flag,
+                "routing_hint": "SCHEDULE_NEXT" if out.sensitive_flag else None,
             },
         }
 

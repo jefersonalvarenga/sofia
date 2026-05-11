@@ -96,6 +96,7 @@ class IrisState(TypedDict, total=False):
     agent_runs: List[Dict[str, Any]]
     response_text: Optional[str]
     outbound_wamid: Optional[str]
+    routing_hint: Optional[str]
 
 
 # Singletons — keep one instance per agent to avoid per-message client churn.
@@ -346,9 +347,16 @@ def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
             }
         )
 
+    routing_hint: Optional[str] = None
+    for run in runs:
+        data = run.get("data") or {}
+        if data.get("routing_hint"):
+            routing_hint = data["routing_hint"]
+
     return {
         "agent_runs": [*state.get("agent_runs", []), *runs],
         "specialist_responses": responses,
+        "routing_hint": routing_hint,
     }
 
 
