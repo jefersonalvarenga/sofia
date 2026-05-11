@@ -162,11 +162,17 @@ class _FakeTable:
                     rows = sorted(rows, key=lambda r: r.get(self._order_col, ""))
                 return MagicMock(data=rows)
 
-            if self._op == "update" and self._in_col == "id":
-                for r in self._db._buffer:
-                    if r["id"] in self._in_vals:
-                        r.update(self._update_data or {})
-                return MagicMock(data=None)
+            if self._op == "update":
+                # Atomic UPDATE ... WHERE filters RETURNING * pattern.
+                matching = [
+                    r for r in self._db._buffer
+                    if all(r.get(k) == v for k, v in self._filters.items())
+                ]
+                if self._in_col:
+                    matching = [r for r in matching if r.get(self._in_col) in self._in_vals]
+                for r in matching:
+                    r.update(self._update_data or {})
+                return MagicMock(data=list(matching))
 
         return MagicMock(data=None)
 
@@ -278,3 +284,60 @@ def test_debounce_window_consolidates(monkeypatch):
     # All 3 buffer rows are flushed.
     assert all(r["flushed"] for r in db.buffer)
     assert len(db.buffer) == 3
+
+
+def test_debounce_window_consolidates_real(monkeypatch):
+    """
+    3 messages arrive within a 200 ms window → exactly 1 pipeline call with
+    all 3 messages concatenated.  This is the acceptance-criteria smoke:
+    '3 mensagens em 5s → 1 chamada de pipeline'.
+    """
+    import asyncio
+    from app.iris import debounce
+
+    monkeypatch.setenv("IRIS_DEBOUNCE_MS", "200")
+
+    db = _SupabaseFake()
+    pipeline_calls: list = []
+
+    async def fake_pipeline(*, clinic_id, message_id, parsed, trace_id):
+        pipeline_calls.append(parsed.message_content)
+
+    async def run():
+        from app.iris.schemas import ParsedMessage
+
+        # Clear module-level window registry so prior test state doesn't leak.
+        debounce._pending.clear()
+
+        base = ParsedMessage(
+            instance_name="SofiaTest",
+            remote_jid=PATIENT_JID,
+            wamid="w0",
+            push_name="Paciente",
+            message_content="",
+            message_type="text",
+            phone="5511900010001",
+        )
+        with patch("app.iris.debounce.get_supabase", return_value=db):
+            for i, text in enumerate(["oi", "quero agendar", "amanhã de tarde"]):
+                p = base.model_copy(update={"wamid": f"w{i}", "message_content": text})
+                await debounce.receive(
+                    clinic_id=CLINIC_ID,
+                    conversation_id=PATIENT_JID,
+                    message_id=str(i),
+                    parsed=p,
+                    trace_id="t0",
+                    pipeline_invoke=fake_pipeline,
+                )
+            # Wait for the 200 ms window to expire (+ 150 ms buffer).
+            await asyncio.sleep(0.35)
+
+    asyncio.run(run())
+
+    # Exactly 1 consolidated pipeline call.
+    assert len(pipeline_calls) == 1, f"expected 1 call, got {len(pipeline_calls)}: {pipeline_calls}"
+    assert pipeline_calls[0] == "oi\nquero agendar\namanhã de tarde"
+
+    # All 3 individual buffer rows flushed.
+    assert len(db.buffer) == 3
+    assert all(r["flushed"] for r in db.buffer)

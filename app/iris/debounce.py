@@ -142,29 +142,30 @@ def _claim_and_drain(
     conversation_id: str,
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    Marks all unflushed buffer rows as flushed and returns them, or None if
-    none found.  In a multi-pod deployment the Postgres advisory lock (held by
-    the caller) ensures only one pod drains for a given conversation.
+    Atomically marks all unflushed buffer rows as flushed and returns them.
+
+    PostgREST translates UPDATE+filter to a single SQL statement:
+      UPDATE sf_message_buffer SET flushed=true
+      WHERE clinic_id=$1 AND conversation_id=$2 AND flushed=false
+      RETURNING *
+
+    This is atomic: the first pod to execute wins; a concurrent pod gets an
+    empty result set and skips the pipeline call.  No separate advisory lock
+    needed — the UPDATE row-level lock provides the same guarantee.
     """
     supabase = get_supabase()
-    # Fetch unflushed rows ordered by creation time.
     result = (
         supabase.table("sf_message_buffer")
-        .select("*")
+        .update({"flushed": True})
         .eq("clinic_id", clinic_id)
         .eq("conversation_id", conversation_id)
         .eq("flushed", False)
-        .order("created_at", desc=False)
         .execute()
     )
     rows: List[Dict[str, Any]] = getattr(result, "data", None) or []
     if not rows:
         return None
-
-    ids = [r["id"] for r in rows]
-    supabase.table("sf_message_buffer").update({"flushed": True}).in_(
-        "id", ids
-    ).execute()
+    rows.sort(key=lambda r: r.get("created_at", ""))
     return rows
 
 
@@ -182,10 +183,9 @@ async def _flush(
     """
     Drains the buffer and fires the pipeline once with all accumulated messages.
 
-    Advisory lock: pg_advisory_xact_lock(hashtext(conversation_id)) serialises
-    concurrent flushes for the same conversation across replicas.  We skip the
-    real lock in test environments (supabase is a fake) — the in-process task
-    registry already prevents races there.
+    Atomicity is provided by _claim_and_drain's UPDATE WHERE flushed=false.
+    The in-process _pending registry prevents redundant concurrent flushes
+    within a single pod; across pods the atomic UPDATE ensures only one wins.
     """
     rows = _claim_and_drain(clinic_id=clinic_id, conversation_id=conversation_id)
     if not rows:
