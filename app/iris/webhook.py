@@ -22,7 +22,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 
 from app.core.supabase_client import get_supabase
 from app.core.telemetry import log
-from app.iris import pipeline
+from app.iris import debounce, pipeline
 from app.iris.parser import parse_evolution_payload
 from app.iris.schemas import ParsedMessage
 
@@ -163,8 +163,9 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks)
     )
 
     background_tasks.add_task(
-        _safe_pipeline_invoke,
+        _safe_debounce_receive,
         clinic_id=clinic_id,
+        conversation_id=parsed.remote_jid,
         message_id=message_id,
         parsed=parsed,
         trace_id=trace_id,
@@ -177,23 +178,26 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks)
     }
 
 
-async def _safe_pipeline_invoke(
+async def _safe_debounce_receive(
     *,
     clinic_id: str,
+    conversation_id: str,
     message_id: str,
     parsed: ParsedMessage,
     trace_id: str,
 ) -> None:
     try:
-        await pipeline.invoke(
+        await debounce.receive(
             clinic_id=clinic_id,
+            conversation_id=conversation_id,
             message_id=message_id,
             parsed=parsed,
             trace_id=trace_id,
+            pipeline_invoke=pipeline.invoke,
         )
     except Exception as exc:
         log.error(
-            "iris.pipeline.error",
+            "iris.debounce.error",
             trace_id=trace_id,
             clinic_id=clinic_id,
             message_id=message_id,
