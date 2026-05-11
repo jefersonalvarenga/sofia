@@ -1,26 +1,34 @@
 """
 Iris LangGraph subgraph (C8 / [EASAA-29](../../../EASAA/issues/EASAA-29)).
 
-Linear pipeline for the greeting smoke:
+Multi-intent pipeline ([EASAA-140](../../../EASAA/issues/EASAA-140)):
 
-    START → load_context → detect_intents → execute_greeting → save_session → send_evolution → END
+    START → load_context → detect_intents
+          → dispatch_specialists → aggregate_response
+          → save_session → send_evolution → END
 
 Reuses Sofia's `app.session.manager` so DNA/style and audit rows
 (`sf_sessions`, `sf_agent_activations`) stay in one place. Routing goes
-through `IrisRouterAgent` (C6) instead of `SofiaRouterAgent`. Greeting
-delivery uses the deterministic `GreetingAgent`. Outbound delivery goes
-through `app.iris.evolution_client` (C9).
+through `IrisRouterAgent` (C6) instead of `SofiaRouterAgent`. The router
+emits one or more `{macro_state, scope_text}` intents per inbound message;
+`dispatch_specialists` calls one specialist per intent (with the matching
+`scope_text` as input) and `aggregate_response` consolidates the N specialist
+replies into a single outbound message.
 
-Scope: only `GREETING` produces a real response. Every other intent —
-including `UNCLASSIFIED` — falls through to a deterministic
-`unknown_fallback` so the patient still sees a reply during the smoke.
-FAQ / Scheduler / etc. ship in follow-up stories.
+Scope as of EASAA-140: only `GREETING` has a real specialist
+(`GreetingAgent`). Every other intent — including `UNCLASSIFIED` — falls
+through to a deterministic `unknown_fallback` so the patient still sees a
+reply. FAQ / Knowledge / Scheduler / Escalation specialists ship as
+follow-ups ([EASAA-142](../../../EASAA/issues/EASAA-142),
+[EASAA-143](../../../EASAA/issues/EASAA-143),
+[EASAA-144](../../../EASAA/issues/EASAA-144),
+[EASAA-145](../../../EASAA/issues/EASAA-145)).
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -73,11 +81,15 @@ class IrisState(TypedDict, total=False):
     attribution_id: Optional[str]
 
     # ---- Routing ----
+    intents: List[Dict[str, str]]
     detected_intents: List[str]
     language: str
     primary_intent: str
     router_reasoning: str
     router_confidence: float
+
+    # ---- Fan-out outputs (one entry per intent, same order) ----
+    specialist_responses: List[Dict[str, str]]
 
     # ---- Outputs ----
     agent_runs: List[Dict[str, Any]]
@@ -157,6 +169,7 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
             "reasoning": result.get("reasoning", ""),
             "data": {
                 "type": "router",
+                "intents": result.get("intents", []),
                 "detected_intents": result.get("detected_intents", []),
                 "language": result.get("language", "pt-BR"),
                 "confidence": result.get("confidence", 0.0),
@@ -191,14 +204,17 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
     )
 
     data = run.get("data") or {}
-    detected_intents = data.get("detected_intents") or ["UNCLASSIFIED"]
+    intents = data.get("intents") or [
+        {"macro_state": "UNCLASSIFIED", "scope_text": state.get("message", "")}
+    ]
+    detected_intents = data.get("detected_intents") or [i["macro_state"] for i in intents]
     language = data.get("language", "pt-BR")
-    primary_intent = detected_intents[-1]
+    primary_intent = detected_intents[-1] if detected_intents else "UNCLASSIFIED"
 
     log.info(
         "iris.node.detect_intents.ok",
         trace_id=state.get("trace_id"),
-        detected_intents=detected_intents,
+        intents=intents,
         primary_intent=primary_intent,
         language=language,
         confidence=data.get("confidence", 0.0),
@@ -206,6 +222,7 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
 
     return {
         "agent_runs": [run],
+        "intents": intents,
         "detected_intents": detected_intents,
         "language": language,
         "primary_intent": primary_intent,
@@ -214,82 +231,145 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
     }
 
 
-def node_execute_greeting(state: IrisState) -> Dict[str, Any]:
-    """Dispatch GREETING → GreetingAgent, otherwise emit unknown_fallback."""
-    primary_intent = state.get("primary_intent", "UNCLASSIFIED")
+# ----------------------------------------------------------------------------
+# Specialist registry
+# ----------------------------------------------------------------------------
+#
+# Each entry maps a macro_state to a callable `(state, scope_text) -> run dict`
+# that mirrors `build_agent_run`'s `_call` signature. Unknown macro_states fall
+# back to `_call_unknown_fallback`. Specialists added in follow-up stories
+# (FAQ / Knowledge / Scheduler / Escalation) register here.
+
+
+def _call_greeting(state: IrisState, scope_text: str) -> Dict[str, Any]:
+    patient_name = (
+        state.get("patient_name")
+        or state.get("push_name")
+        or "Paciente"
+    )
+    clinic_style = state.get("clinic_style") or {}
+    return _greeting_agent.forward(
+        patient_name=patient_name,
+        clinic_name=state.get("clinic_name", "Clínica"),
+        assistant_name=state.get("assistant_name", "Iris"),
+        history_length=len(state.get("history", [])),
+        greeting_example=clinic_style.get("greeting_example", ""),
+    )
+
+
+def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
+    return {
+        "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
+        "conversation_stage": state.get("conversation_stage", "new"),
+        "reasoning": (
+            f"No specialist registered for scope={scope_text!r}; "
+            "deterministic fallback returned."
+        ),
+        "data": None,
+    }
+
+
+SPECIALIST_REGISTRY: Dict[str, tuple[str, Callable[[IrisState, str], Dict[str, Any]]]] = {
+    "GREETING": ("GreetingAgent", _call_greeting),
+}
+
+
+def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
+    """Fan out: call one specialist per detected intent with its scope_text.
+
+    Specialist order matches `intents` order (informational → CTA last).
+    Each specialist call produces one `agent_run` row; the resulting text is
+    captured into `specialist_responses` and consolidated in
+    `node_aggregate_response`.
+    """
     sofia_version = get_settings().sofia_version
+    intents = state.get("intents") or []
+    if not intents:
+        intents = [
+            {"macro_state": "UNCLASSIFIED", "scope_text": state.get("message", "")}
+        ]
 
-    if primary_intent == "GREETING":
-        def _call_greeting() -> Dict[str, Any]:
-            patient_name = (
-                state.get("patient_name")
-                or state.get("push_name")
-                or "Paciente"
-            )
-            clinic_style = state.get("clinic_style") or {}
-            return _greeting_agent.forward(
-                patient_name=patient_name,
-                clinic_name=state.get("clinic_name", "Clínica"),
-                assistant_name=state.get("assistant_name", "Iris"),
-                history_length=len(state.get("history", [])),
-                greeting_example=clinic_style.get("greeting_example", ""),
+    runs: List[Dict[str, Any]] = []
+    responses: List[Dict[str, str]] = []
+
+    for intent in intents:
+        macro = intent.get("macro_state") or "UNCLASSIFIED"
+        scope = intent.get("scope_text") or state.get("message", "")
+        agent_name, caller = SPECIALIST_REGISTRY.get(
+            macro, ("UnknownFallback", _call_unknown_fallback)
+        )
+
+        if agent_name == "UnknownFallback":
+            log.info(
+                "iris.node.unknown_fallback",
+                trace_id=state.get("trace_id"),
+                clinic_id=state.get("clinic_id"),
+                node_name="unknown_fallback",
+                macro_state=macro,
+                scope_text=scope,
             )
 
         run = build_agent_run(
-            agent_name="GreetingAgent",
-            reason="greeting_detected",
+            agent_name=agent_name,
+            reason=f"iris.dispatch.{macro.lower()}",
             trace_id=state.get("trace_id", ""),
             clinic_id=state.get("clinic_id", ""),
             session_id=state.get("session_id", ""),
             language=state.get("language", "pt-BR"),
             sofia_version=sofia_version,
-            call=_call_greeting,
+            call=lambda c=caller, s=scope: c(state, s),
         )
-    else:
-        # Out-of-scope intent for the greeting smoke. Log a node_logs-style
-        # structured entry with `node_name=unknown_fallback` so observability
-        # surfaces this branch without a dedicated table.
-        log.info(
-            "iris.node.unknown_fallback",
-            trace_id=state.get("trace_id"),
-            clinic_id=state.get("clinic_id"),
-            node_name="unknown_fallback",
-            primary_intent=primary_intent,
-            detected_intents=state.get("detected_intents", []),
-        )
+        runs.append(run)
 
-        def _call_fallback() -> Dict[str, Any]:
-            return {
-                "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
-                "conversation_stage": state.get("conversation_stage", "new"),
-                "reasoning": (
-                    f"Out-of-scope intent={primary_intent}. Iris greeting smoke "
-                    "only handles GREETING; deterministic fallback returned."
-                ),
-                "data": None,
+        text: Optional[str] = None
+        for msg in run.get("messages", []):
+            if msg.get("type") == "text" and msg.get("content"):
+                text = msg["content"]
+                break
+        responses.append(
+            {
+                "macro_state": macro,
+                "scope_text": scope,
+                "response_text": text or "",
+                "agent_name": agent_name,
             }
-
-        run = build_agent_run(
-            agent_name="UnknownFallback",
-            reason="unknown_fallback",
-            trace_id=state.get("trace_id", ""),
-            clinic_id=state.get("clinic_id", ""),
-            session_id=state.get("session_id", ""),
-            language=state.get("language", "pt-BR"),
-            sofia_version=sofia_version,
-            call=_call_fallback,
         )
-
-    response_text: Optional[str] = None
-    for msg in run.get("messages", []):
-        if msg.get("type") == "text" and msg.get("content"):
-            response_text = msg["content"]
-            break
 
     return {
-        "agent_runs": [*state.get("agent_runs", []), run],
-        "response_text": response_text,
+        "agent_runs": [*state.get("agent_runs", []), *runs],
+        "specialist_responses": responses,
     }
+
+
+def _consolidate(responses: List[Dict[str, str]]) -> Optional[str]:
+    """Consolidate specialist replies into one outbound message.
+
+    Keeps the router's informational → CTA ordering, drops empties, and joins
+    with paragraph breaks. With a single response we pass it through unchanged
+    so the existing single-intent UX is preserved. Multi-intent currently uses
+    plain concatenation by paragraph; a higher-quality LLM-driven rewrite
+    lands once the real specialists ship.
+    """
+    texts = [r["response_text"].strip() for r in responses if r.get("response_text", "").strip()]
+    if not texts:
+        return None
+    if len(texts) == 1:
+        return texts[0]
+    return "\n\n".join(texts)
+
+
+def node_aggregate_response(state: IrisState) -> Dict[str, Any]:
+    """Pick the outbound `response_text` from the fan-out responses."""
+    responses = state.get("specialist_responses") or []
+    response_text = _consolidate(responses)
+    log.info(
+        "iris.node.aggregate_response",
+        trace_id=state.get("trace_id"),
+        intent_count=len(responses),
+        macro_states=[r.get("macro_state") for r in responses],
+        empty=response_text is None,
+    )
+    return {"response_text": response_text}
 
 
 def node_save_session(state: IrisState) -> Dict[str, Any]:
@@ -388,14 +468,16 @@ async def node_send_evolution(state: IrisState) -> Dict[str, Any]:
 workflow = StateGraph(IrisState)
 workflow.add_node("load_context", node_load_context)
 workflow.add_node("detect_intents", node_detect_intents)
-workflow.add_node("execute_greeting", node_execute_greeting)
+workflow.add_node("dispatch_specialists", node_dispatch_specialists)
+workflow.add_node("aggregate_response", node_aggregate_response)
 workflow.add_node("save_session", node_save_session)
 workflow.add_node("send_evolution", node_send_evolution)
 
 workflow.set_entry_point("load_context")
 workflow.add_edge("load_context", "detect_intents")
-workflow.add_edge("detect_intents", "execute_greeting")
-workflow.add_edge("execute_greeting", "save_session")
+workflow.add_edge("detect_intents", "dispatch_specialists")
+workflow.add_edge("dispatch_specialists", "aggregate_response")
+workflow.add_edge("aggregate_response", "save_session")
 workflow.add_edge("save_session", "send_evolution")
 workflow.add_edge("send_evolution", END)
 
@@ -454,8 +536,10 @@ async def invoke(
         "status": "ok",
         "message_id": message_id,
         "agent_runs": agent_runs,
+        "intents": result.get("intents", []),
         "detected_intents": result.get("detected_intents", []),
         "primary_intent": result.get("primary_intent"),
         "language": result.get("language", "pt-BR"),
+        "specialist_responses": result.get("specialist_responses", []),
         "outbound_wamid": result.get("outbound_wamid"),
     }
