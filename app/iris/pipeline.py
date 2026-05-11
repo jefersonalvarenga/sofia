@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from app.agents.greeting.agent import GreetingAgent
+from app.agents.knowledge.agent import KnowledgeSpecialist
 from app.agents.router.agent_iris import IRIS_ROUTER_MODEL, IrisRouterAgent
 from app.core.config import get_settings
 from app.core.pricing import compute_cost
@@ -95,12 +96,13 @@ class IrisState(TypedDict, total=False):
     agent_runs: List[Dict[str, Any]]
     response_text: Optional[str]
     outbound_wamid: Optional[str]
+    routing_hint: Optional[str]
 
 
-# Singletons — IrisRouterAgent owns an Anthropic client; GreetingAgent is
-# stateless. Keep one of each to avoid per-message client churn.
+# Singletons — keep one instance per agent to avoid per-message client churn.
 _router_agent = IrisRouterAgent()
 _greeting_agent = GreetingAgent()
+_knowledge_agent = KnowledgeSpecialist()
 
 
 # ============================================================================
@@ -257,6 +259,15 @@ def _call_greeting(state: IrisState, scope_text: str) -> Dict[str, Any]:
     )
 
 
+def _call_knowledge(state: IrisState, scope_text: str) -> Dict[str, Any]:
+    return _knowledge_agent.forward(
+        question=scope_text,
+        clinic_name=state.get("clinic_name", "Clínica"),
+        tenant_id=state.get("clinic_id", ""),
+        history=state.get("history"),
+    )
+
+
 def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return {
         "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
@@ -271,6 +282,7 @@ def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
 
 SPECIALIST_REGISTRY: Dict[str, tuple[str, Callable[[IrisState, str], Dict[str, Any]]]] = {
     "GREETING": ("GreetingAgent", _call_greeting),
+    "FAQ": ("KnowledgeSpecialist", _call_knowledge),
 }
 
 
@@ -335,9 +347,16 @@ def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
             }
         )
 
+    routing_hint: Optional[str] = None
+    for run in runs:
+        data = run.get("data") or {}
+        if data.get("routing_hint"):
+            routing_hint = data["routing_hint"]
+
     return {
         "agent_runs": [*state.get("agent_runs", []), *runs],
         "specialist_responses": responses,
+        "routing_hint": routing_hint,
     }
 
 
