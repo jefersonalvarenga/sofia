@@ -20,6 +20,7 @@ External services are stubbed end-to-end:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
@@ -39,12 +40,31 @@ PATIENT_JID = "5511999990000@s.whatsapp.net"
 # ---------------------------------------------------------------------------
 
 
-def _fake_anthropic_response(*, intents: List[str], reasoning: str = "fake") -> Any:
+def _fake_anthropic_response(
+    *,
+    intents: List[Any],
+    reasoning: str = "fake",
+    scope: str = "oi",
+) -> Any:
+    """Build a fake router response.
+
+    `intents` may be a list of macro_state strings (legacy convenience —
+    `scope` is used as scope_text for each) or a list of ``(macro_state,
+    scope_text)`` tuples for multi-intent fixtures.
+    """
+    parsed_intents: List[Dict[str, str]] = []
+    for item in intents:
+        if isinstance(item, tuple):
+            macro, scope_text = item
+        else:
+            macro, scope_text = item, scope
+        parsed_intents.append({"macro_state": macro, "scope_text": scope_text})
+
     block = MagicMock()
     block.type = "tool_use"
     block.name = "classify_intent"
     block.input = {
-        "detected_intents": intents,
+        "intents": parsed_intents,
         "language": "pt-BR",
         "reasoning": reasoning,
         "confidence": 0.95,
@@ -295,3 +315,163 @@ class TestPipelineE2E:
         ]
         assert "GreetingAgent" in activated_agents
         assert "IrisRouterAgent" in activated_agents
+
+    def test_multi_intent_fans_out_and_aggregates(
+        self,
+        supabase_fake: _SupabaseFake,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Smoke from [EASAA-140](../../EASAA/issues/EASAA-140):
+
+        Input "Quanto custa o botox? Posso fazer estando grávida?" produces
+        two intents (FAQ + HUMAN_ESCALATION). The pipeline fans out into one
+        specialist run per intent (both fall back deterministically here —
+        real FAQ/Escalation specialists ship in follow-ups) and the
+        aggregator consolidates the two replies into a single outbound
+        message.
+
+        To prove aggregation is real and not a no-op, we register a
+        temporary FAQ specialist that emits a price reply, so the two
+        responses are distinct and we can assert both are present in the
+        aggregated outbound message.
+        """
+        # 1) Router emits two intents with distinct scope_texts
+        fake_client = MagicMock()
+        fake_client.messages.create = MagicMock(
+            return_value=_fake_anthropic_response(
+                intents=[
+                    ("FAQ", "Quanto custa o botox?"),
+                    ("HUMAN_ESCALATION", "Posso fazer estando grávida?"),
+                ],
+                reasoning="preço + escalação médica",
+            )
+        )
+        monkeypatch.setattr(
+            iris_pipeline._router_agent, "client", fake_client, raising=True
+        )
+
+        # 2) Register a temporary FAQ specialist so the aggregator has two
+        #    distinct, non-empty responses to consolidate.
+        def _fake_faq(state: Any, scope_text: str) -> Dict[str, Any]:
+            return {
+                "messages": [
+                    {
+                        "type": "text",
+                        "content": (
+                            f"Botox custa entre R$800 e R$1.500 por região "
+                            f"(scope: {scope_text})."
+                        ),
+                    }
+                ],
+                "conversation_stage": state.get("conversation_stage", "new"),
+                "reasoning": "fake faq",
+                "data": None,
+            }
+
+        original_registry = dict(iris_pipeline.SPECIALIST_REGISTRY)
+        iris_pipeline.SPECIALIST_REGISTRY["FAQ"] = ("FAQResponder", _fake_faq)
+        monkeypatch.setattr(
+            iris_pipeline, "SPECIALIST_REGISTRY", iris_pipeline.SPECIALIST_REGISTRY
+        )
+
+        # 3) Patch supabase + Evolution like the single-intent smoke
+        monkeypatch.setattr(
+            "app.core.supabase_client.get_supabase",
+            lambda: supabase_fake,
+        )
+        monkeypatch.setattr(
+            "app.session.manager.get_supabase",
+            lambda: supabase_fake,
+        )
+
+        outbound_payloads: List[str] = []
+
+        def _capture_evolution(request: httpx.Request) -> httpx.Response:
+            try:
+                body = json.loads(request.content.decode("utf-8"))
+            except Exception:  # pragma: no cover - defensive
+                body = {}
+            outbound_payloads.append(body.get("text") or body.get("textMessage", {}).get("text") or "")
+            return httpx.Response(
+                200,
+                json={
+                    "key": {
+                        "id": "BAE5OUTBOUND002",
+                        "remoteJid": PATIENT_JID,
+                        "fromMe": True,
+                    },
+                    "status": "PENDING",
+                },
+            )
+
+        transport = httpx.MockTransport(_capture_evolution)
+        original_send_text = iris_pipeline.send_text_message
+
+        async def _patched_send(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+            kwargs.setdefault("base_url", "https://evo.test")
+            async with httpx.AsyncClient(transport=transport) as http:
+                return await original_send_text(*args, client=http, **kwargs)
+
+        monkeypatch.setattr(iris_pipeline, "send_text_message", _patched_send)
+
+        # 4) Drive the pipeline
+        parsed = ParsedMessage(
+            instance_name="iris-prod",
+            remote_jid=PATIENT_JID,
+            phone="5511999990000",
+            wamid="wamid-e2e-002",
+            push_name="Maria",
+            message_content="Quanto custa o botox? Posso fazer estando grávida?",
+            message_type="text",
+        )
+
+        try:
+            result = asyncio.run(
+                iris_pipeline.invoke(
+                    clinic_id=CLINIC_ID,
+                    message_id="msg-e2e-002",
+                    parsed=parsed,
+                    trace_id="trace-e2e-002",
+                )
+            )
+        finally:
+            iris_pipeline.SPECIALIST_REGISTRY.clear()
+            iris_pipeline.SPECIALIST_REGISTRY.update(original_registry)
+
+        # ---- router produced the multi-intent shape ----
+        assert result["status"] == "ok"
+        assert [i["macro_state"] for i in result["intents"]] == [
+            "FAQ",
+            "HUMAN_ESCALATION",
+        ]
+        assert result["primary_intent"] == "HUMAN_ESCALATION"
+
+        # ---- fan-out produced one run per intent ----
+        specialist_runs = [
+            run
+            for run in result["agent_runs"]
+            if run.get("agent") != "IrisRouterAgent"
+        ]
+        assert len(specialist_runs) == 2, (
+            f"expected one specialist run per intent, got {specialist_runs!r}"
+        )
+        # First intent (FAQ informational) wired to the fake FAQResponder;
+        # second intent (HUMAN_ESCALATION) falls back deterministically until
+        # the escalation specialist ships.
+        run_agents = [run.get("agent") for run in specialist_runs]
+        assert run_agents == ["FAQResponder", "UnknownFallback"]
+
+        # ---- aggregator emitted one outbound message containing both replies ----
+        assert len(outbound_payloads) == 1, (
+            f"aggregator must collapse N intents into 1 send, got "
+            f"{len(outbound_payloads)} sends"
+        )
+        aggregated = outbound_payloads[0]
+        assert "Botox" in aggregated, aggregated
+        assert iris_pipeline.UNKNOWN_FALLBACK_TEXT in aggregated, aggregated
+
+        # ---- audit trail captures both specialists ----
+        activated = [row.get("agent_name") for row in supabase_fake.activations]
+        assert "IrisRouterAgent" in activated
+        assert "FAQResponder" in activated
+        assert "UnknownFallback" in activated

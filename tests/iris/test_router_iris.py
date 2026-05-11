@@ -16,6 +16,7 @@ import pytest
 from app.agents.router.agent_iris import (
     CLASSIFY_TOOL,
     IRIS_ROUTER_MODEL,
+    Intent,
     IrisRouterAgent,
     IrisRouterOutput,
 )
@@ -23,6 +24,10 @@ from app.agents.router.signatures import SofiaIntentType
 
 
 EVAL_CASES_PATH = Path(__file__).resolve().parents[1] / "eval_cases.json"
+
+
+def _intent(macro: str, scope: str) -> Dict[str, str]:
+    return {"macro_state": macro, "scope_text": scope}
 
 
 def _make_tool_use_response(tool_input: Dict[str, Any]) -> Any:
@@ -65,16 +70,25 @@ class TestClassifyToolSchema:
 
     def test_required_fields(self):
         required = set(CLASSIFY_TOOL["input_schema"]["required"])
-        assert {"detected_intents", "language", "reasoning", "confidence"} <= required
+        assert {"intents", "language", "reasoning", "confidence"} <= required
 
     def test_pydantic_round_trip(self):
         out = IrisRouterOutput(
-            detected_intents=[SofiaIntentType.GREETING],
+            intents=[Intent(macro_state=SofiaIntentType.GREETING, scope_text="oi")],
             language="pt-BR",
             reasoning="ok",
             confidence=0.9,
         )
-        assert out.detected_intents[0] == SofiaIntentType.GREETING
+        assert out.intents[0].macro_state == SofiaIntentType.GREETING
+        assert out.intents[0].scope_text == "oi"
+
+    def test_intent_requires_scope_text(self):
+        # Empty scope_text is rejected — every intent must point at the slice
+        # of the message that triggered it.
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Intent(macro_state=SofiaIntentType.FAQ, scope_text="")
 
 
 # ─── _format_history ──────────────────────────────────────────────────────────
@@ -107,28 +121,71 @@ class TestNormalizeIntents:
 
     def test_priority_sort_cta_last(self, router):
         # FAQ informational, SCHEDULE CTA → CTA last
-        result = router._normalize_intents(["SCHEDULE", "FAQ"])
-        assert result == ["FAQ", "SCHEDULE"]
+        result = router._normalize_intents(
+            [_intent("SCHEDULE", "quero agendar"), _intent("FAQ", "aceitam Unimed?")],
+            latest_message="quero agendar, aceitam Unimed?",
+        )
+        assert [i["macro_state"] for i in result] == ["FAQ", "SCHEDULE"]
+        # scope_text travels with each intent through the sort
+        assert result[0]["scope_text"] == "aceitam Unimed?"
+        assert result[1]["scope_text"] == "quero agendar"
 
     def test_human_escalation_always_last(self, router):
-        result = router._normalize_intents(["HUMAN_ESCALATION", "FAQ", "SCHEDULE"])
-        assert result[-1] == "HUMAN_ESCALATION"
+        result = router._normalize_intents(
+            [
+                _intent("HUMAN_ESCALATION", "quero atendente"),
+                _intent("FAQ", "preço?"),
+                _intent("SCHEDULE", "marcar"),
+            ],
+            latest_message="...",
+        )
+        assert result[-1]["macro_state"] == "HUMAN_ESCALATION"
 
-    def test_dedups_preserving_order(self, router):
-        result = router._normalize_intents(["FAQ", "FAQ", "SCHEDULE"])
-        assert result == ["FAQ", "SCHEDULE"]
+    def test_dedups_preserving_first_scope(self, router):
+        # When the LLM emits the same macro_state twice, keep the first scope.
+        result = router._normalize_intents(
+            [
+                _intent("FAQ", "preço?"),
+                _intent("FAQ", "horário?"),
+                _intent("SCHEDULE", "marcar"),
+            ],
+            latest_message="...",
+        )
+        assert [i["macro_state"] for i in result] == ["FAQ", "SCHEDULE"]
+        faq = next(i for i in result if i["macro_state"] == "FAQ")
+        assert faq["scope_text"] == "preço?"
 
-    def test_empty_falls_back_to_unclassified(self, router):
-        assert router._normalize_intents([]) == ["UNCLASSIFIED"]
+    def test_empty_falls_back_to_unclassified_with_full_message(self, router):
+        result = router._normalize_intents([], latest_message="blá blá")
+        assert result == [{"macro_state": "UNCLASSIFIED", "scope_text": "blá blá"}]
 
     def test_unknown_intent_dropped(self, router):
         # only FAQ survives → list is non-empty so no UNCLASSIFIED fallback
-        assert router._normalize_intents(["BANANA", "FAQ"]) == ["FAQ"]
+        result = router._normalize_intents(
+            [_intent("BANANA", "?"), _intent("FAQ", "preço?")],
+            latest_message="preço?",
+        )
+        assert [i["macro_state"] for i in result] == ["FAQ"]
 
-    def test_accepts_enum_values(self, router):
-        result = router._normalize_intents([SofiaIntentType.GREETING, SofiaIntentType.FAQ])
-        # GREETING priority 5, FAQ priority 4 → GREETING first (informational), FAQ last
-        assert result == ["GREETING", "FAQ"]
+    def test_accepts_intent_pydantic(self, router):
+        # _normalize_intents must accept Intent models, not just dicts —
+        # `forward()` hands it parsed Intent instances directly.
+        result = router._normalize_intents(
+            [
+                Intent(macro_state=SofiaIntentType.GREETING, scope_text="oi"),
+                Intent(macro_state=SofiaIntentType.FAQ, scope_text="preço?"),
+            ],
+            latest_message="oi, preço?",
+        )
+        # GREETING priority 5, FAQ priority 4 → GREETING first, FAQ last
+        assert [i["macro_state"] for i in result] == ["GREETING", "FAQ"]
+
+    def test_missing_scope_text_falls_back_to_message(self, router):
+        result = router._normalize_intents(
+            [{"macro_state": "FAQ", "scope_text": ""}],
+            latest_message="preço?",
+        )
+        assert result[0]["scope_text"] == "preço?"
 
 
 # ─── forward() ────────────────────────────────────────────────────────────────
@@ -137,7 +194,7 @@ class TestForward:
 
     def test_calls_anthropic_with_correct_params(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["GREETING"],
+            "intents": [_intent("GREETING", "oi")],
             "language": "pt-BR",
             "reasoning": "Saudação simples.",
             "confidence": 0.95,
@@ -154,12 +211,13 @@ class TestForward:
 
     def test_normal_greeting(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["GREETING"],
+            "intents": [_intent("GREETING", "oi")],
             "language": "pt-BR",
             "reasoning": "Saudação.",
             "confidence": 0.9,
         })
         result = router.forward("oi", [], "new")
+        assert result["intents"] == [{"macro_state": "GREETING", "scope_text": "oi"}]
         assert result["detected_intents"] == ["GREETING"]
         assert result["language"] == "pt-BR"
         assert result["confidence"] == pytest.approx(0.9)
@@ -168,23 +226,62 @@ class TestForward:
     def test_multi_intent_priority_order(self, router):
         # LLM may return in any order — normalizer must sort CTA last
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["SCHEDULE", "FAQ"],
+            "intents": [
+                _intent("SCHEDULE", "quero agendar limpeza"),
+                _intent("FAQ", "aceitam Unimed?"),
+            ],
             "language": "pt-BR",
             "reasoning": "Quer agendar e pergunta convênio.",
             "confidence": 0.88,
         })
         result = router.forward("quero agendar limpeza, aceitam Unimed?", [], "new")
         assert result["detected_intents"] == ["FAQ", "SCHEDULE"]
+        assert result["intents"][0]["scope_text"] == "aceitam Unimed?"
+        assert result["intents"][1]["scope_text"] == "quero agendar limpeza"
 
     def test_human_escalation_last(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["FAQ", "HUMAN_ESCALATION"],
+            "intents": [
+                _intent("FAQ", "preço?"),
+                _intent("HUMAN_ESCALATION", "quero falar com atendente"),
+            ],
             "language": "pt-BR",
             "reasoning": "Pergunta + pedir atendente.",
             "confidence": 0.95,
         })
         result = router.forward("preço? quero falar com atendente", [], "new")
         assert result["detected_intents"][-1] == "HUMAN_ESCALATION"
+        # scope_text on the escalation intent points at the escalation slice
+        escalation = next(
+            i for i in result["intents"] if i["macro_state"] == "HUMAN_ESCALATION"
+        )
+        assert "atendente" in escalation["scope_text"]
+
+    def test_botox_pregnancy_smoke_shape(self, router):
+        """Smoke from [EASAA-140](../../EASAA/issues/EASAA-140):
+
+        Multi-question message yields FAQ (preço) + HUMAN_ESCALATION
+        (gravidez = pergunta clínica). Each intent carries the originating
+        scope so downstream specialists answer the right slice.
+        """
+        router.client.messages.create.return_value = _make_tool_use_response({
+            "intents": [
+                _intent("FAQ", "Quanto custa o botox?"),
+                _intent("HUMAN_ESCALATION", "Posso fazer estando grávida?"),
+            ],
+            "language": "pt-BR",
+            "reasoning": "Preço + escalação médica.",
+            "confidence": 0.92,
+        })
+        result = router.forward(
+            "Quanto custa o botox? Posso fazer estando grávida?", [], "new"
+        )
+        assert [i["macro_state"] for i in result["intents"]] == [
+            "FAQ",
+            "HUMAN_ESCALATION",
+        ]
+        assert result["intents"][0]["scope_text"] == "Quanto custa o botox?"
+        assert result["intents"][1]["scope_text"] == "Posso fazer estando grávida?"
 
     def test_anthropic_exception_propagates(self, router):
         # Router must NOT swallow API failures — telemetry needs the real error
@@ -201,7 +298,7 @@ class TestForward:
 
     def test_invalid_intent_payload_propagates(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["BANANA"],
+            "intents": [_intent("BANANA", "hmm")],
             "language": "pt-BR",
             "reasoning": "?",
             "confidence": 0.5,
@@ -211,7 +308,7 @@ class TestForward:
 
     def test_confidence_out_of_range_propagates(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["GREETING"],
+            "intents": [_intent("GREETING", "oi")],
             "language": "pt-BR",
             "reasoning": "ok",
             "confidence": 1.5,
@@ -221,7 +318,7 @@ class TestForward:
 
     def test_history_passed_in_user_prompt(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["SCHEDULE"],
+            "intents": [_intent("SCHEDULE", "o primeiro horário")],
             "language": "pt-BR",
             "reasoning": "Mid scheduling.",
             "confidence": 0.9,
@@ -234,7 +331,7 @@ class TestForward:
 
     def test_last_response_captured_for_telemetry(self, router):
         router.client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": ["GREETING"],
+            "intents": [_intent("GREETING", "oi")],
             "language": "pt-BR",
             "reasoning": "ok",
             "confidence": 0.9,
@@ -260,7 +357,7 @@ class TestEvalCasesParity:
     def test_case(self, case):
         client = MagicMock()
         client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": [case["expected_intent"]],
+            "intents": [_intent(case["expected_intent"], case["message"])],
             "language": "pt-BR",
             "reasoning": case["description"][:200],
             "confidence": 0.9,
@@ -310,17 +407,21 @@ class TestC10IntentTable:
     @pytest.mark.parametrize(
         "message, llm_intents, expected",
         [
-            ("oi", ["GREETING"], ["GREETING"]),
-            ("quero agendar limpeza", ["SCHEDULE"], ["SCHEDULE"]),
+            ("oi", [("GREETING", "oi")], ["GREETING"]),
+            (
+                "quero agendar limpeza",
+                [("SCHEDULE", "quero agendar limpeza")],
+                ["SCHEDULE"],
+            ),
             # When the LLM produces a valid UNCLASSIFIED, surface it directly.
-            ("blá blá", ["UNCLASSIFIED"], ["UNCLASSIFIED"]),
+            ("blá blá", [("UNCLASSIFIED", "blá blá")], ["UNCLASSIFIED"]),
         ],
         ids=["greeting", "schedule", "unclassified"],
     )
     def test_router_intent_table(self, message, llm_intents, expected):
         client = MagicMock()
         client.messages.create.return_value = _make_tool_use_response({
-            "detected_intents": llm_intents,
+            "intents": [_intent(m, s) for m, s in llm_intents],
             "language": "pt-BR",
             "reasoning": "c10 fixture",
             "confidence": 0.91,

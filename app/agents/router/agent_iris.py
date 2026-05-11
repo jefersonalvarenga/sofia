@@ -31,16 +31,42 @@ INTENT_PRIORITY = {
 VALID_INTENTS = {item.value for item in SofiaIntentType}
 
 
+class Intent(BaseModel):
+    """A single intent detected in the patient message, with its originating scope.
+
+    The router can emit 1..N of these. `scope_text` is the substring (or close
+    paraphrase) of the latest message that triggered this intent — downstream
+    specialists receive `scope_text` rather than the full message so each
+    specialist answers only its own slice of a multi-question message.
+    """
+
+    macro_state: SofiaIntentType = Field(
+        ...,
+        description=(
+            "Macro state of the intent. Valid values: GREETING, FAQ, SCHEDULE, "
+            "REENGAGE, HUMAN_ESCALATION, UNCLASSIFIED."
+        ),
+    )
+    scope_text: str = Field(
+        ...,
+        description=(
+            "Trecho da mensagem do paciente que originou essa intent. Prefira "
+            "uma substring literal. Quando há só uma intent, pode ser a "
+            "mensagem inteira."
+        ),
+        min_length=1,
+    )
+
+
 class IrisRouterOutput(BaseModel):
     """Structured output schema for the Iris router tool call."""
 
-    detected_intents: List[SofiaIntentType] = Field(
+    intents: List[Intent] = Field(
         ...,
         description=(
-            "Lista de intents detectadas, ordenadas de informacional para mais "
-            "importante (CTA por último). HUMAN_ESCALATION é sempre o último se "
-            "presente. Valores válidos: GREETING, FAQ, SCHEDULE, REENGAGE, "
-            "HUMAN_ESCALATION, UNCLASSIFIED."
+            "Lista de intents detectadas (1..N), ordenadas de informacional para "
+            "mais importante (CTA por último). HUMAN_ESCALATION é sempre o último "
+            "se presente. Cada item tem {macro_state, scope_text}."
         ),
         min_length=1,
     )
@@ -62,22 +88,22 @@ class IrisRouterOutput(BaseModel):
 
 
 SYSTEM_PROMPT = """Você é o Router Agent da Iris, recepcionista de IA para clínicas de estética/medicina no WhatsApp.
-Sua função é classificar a última mensagem do paciente em uma ou mais intents e detectar a língua.
+Sua função é classificar a última mensagem do paciente em uma ou mais intents, identificar o trecho que originou cada uma, e detectar a língua.
 
 Definições:
 - GREETING: paciente inicia conversa, cumprimenta, ou envia primeira mensagem.
 - FAQ: paciente pergunta sobre serviços, preços, endereço, horários, convênios, procedimentos, recuperação ou qualquer informação geral.
 - SCHEDULE: paciente quer agendar, confirmar consulta, ou está no meio de um agendamento (escolhendo serviço/horário).
-- HUMAN_ESCALATION: paciente pede explicitamente para falar com um humano, atendente ou recepcionista.
+- HUMAN_ESCALATION: paciente pede explicitamente para falar com um humano, atendente ou recepcionista, OU faz uma pergunta médica/clínica que exige avaliação profissional (gravidez, alergia grave, condição crônica, contraindicação).
 - REENGAGE: paciente retoma uma conversa que estava pausada ou ociosa.
 - UNCLASSIFIED: nenhuma das anteriores se aplica claramente.
 
 Regras multi-intent:
-1. Uma mensagem pode disparar múltiplas intents — detecte TODAS que se aplicam.
-2. Ordene as intents do informacional para o mais importante (CTA por último).
+1. Uma mensagem pode disparar múltiplas intents — detecte TODAS que se aplicam, retornando uma lista `intents` com {macro_state, scope_text}.
+2. `scope_text` é o trecho literal (ou quase-literal) da mensagem que originou aquela intent. Quando só uma intent se aplica, `scope_text` pode ser a mensagem inteira.
+3. Ordene as intents do informacional para o mais importante (CTA por último).
    Prioridade (mais importante = último): HUMAN_ESCALATION > SCHEDULE > REENGAGE > FAQ > GREETING.
-3. HUMAN_ESCALATION sempre aparece por último quando presente — sobrepõe outras ações.
-4. Quando só uma intent se aplica, retorne apenas ela.
+4. HUMAN_ESCALATION sempre aparece por último quando presente — sobrepõe outras ações.
 5. Use `conversation_stage` como contexto — paciente em meio a agendamento normalmente é SCHEDULE.
 6. `reasoning` deve ser conciso (≤200 chars).
 
@@ -87,10 +113,11 @@ Detecção de língua:
 - Default: 'pt-BR' se ambíguo.
 
 Exemplos:
-- "oi" → detected_intents=["GREETING"], language="pt-BR".
-- "quanto custa limpeza?" → detected_intents=["FAQ"], language="pt-BR".
-- "quero agendar uma limpeza, vocês aceitam Unimed?" → detected_intents=["FAQ","SCHEDULE"].
-- "quero falar com atendente" → detected_intents=["HUMAN_ESCALATION"].
+- "oi" → intents=[{"macro_state":"GREETING","scope_text":"oi"}], language="pt-BR".
+- "quanto custa limpeza?" → intents=[{"macro_state":"FAQ","scope_text":"quanto custa limpeza?"}].
+- "quero agendar uma limpeza, vocês aceitam Unimed?" → intents=[{"macro_state":"FAQ","scope_text":"vocês aceitam Unimed?"},{"macro_state":"SCHEDULE","scope_text":"quero agendar uma limpeza"}].
+- "Quanto custa o botox? Posso fazer estando grávida?" → intents=[{"macro_state":"FAQ","scope_text":"Quanto custa o botox?"},{"macro_state":"HUMAN_ESCALATION","scope_text":"Posso fazer estando grávida?"}].
+- "quero falar com atendente" → intents=[{"macro_state":"HUMAN_ESCALATION","scope_text":"quero falar com atendente"}].
 
 Sempre chame a tool `classify_intent` com o resultado estruturado. Não responda em texto livre."""
 
@@ -100,7 +127,7 @@ def _build_classify_tool() -> Dict[str, Any]:
     schema = IrisRouterOutput.model_json_schema()
     return {
         "name": "classify_intent",
-        "description": "Classify the patient message into intents and detect language.",
+        "description": "Classify the patient message into intents (with scope_text per intent) and detect language.",
         "input_schema": {
             "type": "object",
             "properties": schema["properties"],
@@ -138,17 +165,53 @@ class IrisRouterAgent:
             lines.append(f"{prefix}: {content}")
         return "\n".join(lines[-20:])
 
-    def _normalize_intents(self, raw_intents: List[Any]) -> List[str]:
+    def _normalize_intents(
+        self,
+        raw_intents: List[Any],
+        latest_message: str,
+    ) -> List[Dict[str, str]]:
+        """Dedup by macro_state, drop unknowns, sort priority (CTA last).
+
+        Each item is a dict ``{"macro_state": str, "scope_text": str}``.
+        `raw_intents` may contain Intent pydantic models or plain dicts.
+        Falls back to a single UNCLASSIFIED intent (scope = full message) if
+        nothing valid remains.
+        """
         seen: set[str] = set()
-        parsed: List[str] = []
+        parsed: List[Dict[str, str]] = []
         for item in raw_intents or []:
-            value = item.value if isinstance(item, SofiaIntentType) else str(item).strip().upper()
-            if value in VALID_INTENTS and value not in seen:
-                seen.add(value)
-                parsed.append(value)
+            if isinstance(item, Intent):
+                macro = item.macro_state.value
+                scope = item.scope_text.strip()
+            elif isinstance(item, dict):
+                raw_macro = item.get("macro_state")
+                macro = (
+                    raw_macro.value
+                    if isinstance(raw_macro, SofiaIntentType)
+                    else str(raw_macro or "").strip().upper()
+                )
+                scope = str(item.get("scope_text") or "").strip()
+            else:
+                continue
+
+            if macro not in VALID_INTENTS or macro in seen:
+                continue
+            if not scope:
+                scope = latest_message
+            seen.add(macro)
+            parsed.append({"macro_state": macro, "scope_text": scope})
+
         if not parsed:
-            return [SofiaIntentType.UNCLASSIFIED.value]
-        parsed.sort(key=lambda x: INTENT_PRIORITY.get(x, 6), reverse=True)
+            return [
+                {
+                    "macro_state": SofiaIntentType.UNCLASSIFIED.value,
+                    "scope_text": latest_message,
+                }
+            ]
+        parsed.sort(
+            key=lambda x: INTENT_PRIORITY.get(x["macro_state"], 6),
+            reverse=True,
+        )
         return parsed
 
     def _extract_tool_input(self, response: Any) -> Optional[Dict[str, Any]]:
@@ -188,7 +251,7 @@ class IrisRouterAgent:
                 raise ValueError("classify_intent tool call missing in response")
 
             parsed = IrisRouterOutput.model_validate(payload)
-            detected_intents = self._normalize_intents(parsed.detected_intents)
+            intents = self._normalize_intents(parsed.intents, latest_message)
             language = parsed.language.strip() or "pt-BR"
             reasoning = parsed.reasoning.strip()
             confidence = max(0.0, min(1.0, float(parsed.confidence)))
@@ -203,7 +266,8 @@ class IrisRouterAgent:
             raise
 
         return {
-            "detected_intents": detected_intents,
+            "intents": intents,
+            "detected_intents": [intent["macro_state"] for intent in intents],
             "language": language,
             "reasoning": reasoning,
             "confidence": confidence,
