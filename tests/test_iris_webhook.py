@@ -145,10 +145,15 @@ class _SupabaseFake:
     def __init__(self, *, instance_to_clinic: Dict[str, str]):
         self._instance_to_clinic = instance_to_clinic
         self._inserted: List[Dict[str, Any]] = []
+        self._buffer: List[Dict[str, Any]] = []
         self._next_message_id = 1
+        self._next_buffer_id = 1
 
     def table(self, name: str):
         return _SupabaseTable(self, name)
+
+    def rpc(self, name: str, params: Dict[str, Any]):
+        return _SupabaseRpc(self, name, params)
 
 
 class _SupabaseTable:
@@ -176,6 +181,11 @@ class _SupabaseTable:
         self._chain["ignore_duplicates"] = ignore_duplicates
         return self
 
+    def insert(self, row: Dict[str, Any]):
+        self._chain["op"] = "insert"
+        self._chain["row"] = row
+        return self
+
     def execute(self):
         if self._name == "sf_instance_clinic_map" and self._chain.get("op") == "select":
             instance = self._chain.get("filters", {}).get("instance_name")
@@ -200,13 +210,79 @@ class _SupabaseTable:
             self._parent._inserted.append(stored)
             return MagicMock(data=[stored])
 
+        if self._name == "sf_message_buffer" and self._chain.get("op") == "insert":
+            row = self._chain["row"]
+            buf_id = f"buf-{self._parent._next_buffer_id:04d}"
+            self._parent._next_buffer_id += 1
+            stored = dict(row, id=buf_id, flushed_at=None, seq=self._parent._next_buffer_id)
+            self._parent._buffer.append(stored)
+            return MagicMock(data=[stored])
+
         return MagicMock(data=None)
+
+
+class _SupabaseRpc:
+    """Fakes the iris_try_flush_conversation RPC.
+
+    Semantics: returns flushed=True only when no later unflushed buffer row
+    exists for the same (clinic_id, remote_jid). When it flushes, marks the
+    rows in the parent's buffer as flushed_at=<sentinel>.
+    """
+
+    def __init__(self, parent: _SupabaseFake, name: str, params: Dict[str, Any]):
+        self._parent = parent
+        self._name = name
+        self._params = params
+
+    def execute(self):
+        if self._name != "iris_try_flush_conversation":
+            return MagicMock(data=None)
+
+        clinic_id = self._params["p_clinic_id"]
+        remote_jid = self._params["p_remote_jid"]
+        watermark_buffer_id = self._params["p_watermark_buffer_id"]
+
+        caller = next(
+            (r for r in self._parent._buffer if r["id"] == watermark_buffer_id),
+            None,
+        )
+        if caller is None:
+            return MagicMock(data=[{
+                "flushed": False, "message_ids": [], "concatenated_content": "",
+                "buffer_count": 0, "latest_buffer_id": None,
+            }])
+
+        pending = [
+            r for r in self._parent._buffer
+            if r["clinic_id"] == clinic_id
+            and r["remote_jid"] == remote_jid
+            and r["flushed_at"] is None
+        ]
+        has_newer = any(r["seq"] > caller["seq"] for r in pending)
+        if has_newer:
+            return MagicMock(data=[{
+                "flushed": False, "message_ids": [], "concatenated_content": "",
+                "buffer_count": 0, "latest_buffer_id": None,
+            }])
+
+        pending.sort(key=lambda r: r["seq"])
+        for r in pending:
+            r["flushed_at"] = "now"
+
+        return MagicMock(data=[{
+            "flushed": True,
+            "message_ids": [r["message_id"] for r in pending],
+            "concatenated_content": "\n".join(r["content"] for r in pending),
+            "buffer_count": len(pending),
+            "latest_buffer_id": pending[-1]["id"] if pending else None,
+        }])
 
 
 @pytest.fixture
 def supabase_fake():
     fake = _SupabaseFake(instance_to_clinic={"Sofia-EasyScale": CLINIC_ID})
-    with patch("app.iris.webhook.get_supabase", return_value=fake):
+    with patch("app.iris.webhook.get_supabase", return_value=fake), \
+         patch("app.iris.accumulator.get_supabase", return_value=fake):
         yield fake
 
 
@@ -214,6 +290,12 @@ def supabase_fake():
 def pipeline_spy():
     with patch("app.iris.webhook.pipeline.invoke", new_callable=AsyncMock) as spy:
         yield spy
+
+
+@pytest.fixture(autouse=True)
+def _zero_debounce(monkeypatch):
+    """Run the debounce timer at 0ms so tests don't sleep 8s."""
+    monkeypatch.setenv("IRIS_DEBOUNCE_MS", "0")
 
 
 @pytest.fixture

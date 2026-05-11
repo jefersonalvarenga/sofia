@@ -22,7 +22,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 
 from app.core.supabase_client import get_supabase
 from app.core.telemetry import log
-from app.iris import pipeline
+from app.iris import accumulator, pipeline
 from app.iris.parser import parse_evolution_payload
 from app.iris.schemas import ParsedMessage
 
@@ -162,30 +162,12 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks)
         remote_jid=parsed.remote_jid,
     )
 
-    background_tasks.add_task(
-        _safe_pipeline_invoke,
-        clinic_id=clinic_id,
-        message_id=message_id,
-        parsed=parsed,
-        trace_id=trace_id,
-    )
-
-    return {
-        "ok": True,
-        "trace_id": trace_id,
-        "message_id": message_id,
-    }
-
-
-async def _safe_pipeline_invoke(
-    *,
-    clinic_id: str,
-    message_id: str,
-    parsed: ParsedMessage,
-    trace_id: str,
-) -> None:
+    # EASAA-141: debounce/accumulate. Each inbound enqueues into
+    # sf_message_buffer and schedules a background flush. The pipeline is
+    # only invoked by the canonical flush task (the one with the newest
+    # buffer row at flush time), which serializes via pg_advisory_xact_lock.
     try:
-        await pipeline.invoke(
+        watermark_buffer_id = accumulator.enqueue_inbound(
             clinic_id=clinic_id,
             message_id=message_id,
             parsed=parsed,
@@ -193,9 +175,35 @@ async def _safe_pipeline_invoke(
         )
     except Exception as exc:
         log.error(
-            "iris.pipeline.error",
+            "iris.webhook.buffer_insert_error",
             trace_id=trace_id,
             clinic_id=clinic_id,
             message_id=message_id,
             error=str(exc),
         )
+        return {"ok": False, "reason": "buffer_insert_error", "trace_id": trace_id}
+
+    if watermark_buffer_id is None:
+        log.warning(
+            "iris.webhook.buffer_no_row",
+            trace_id=trace_id,
+            clinic_id=clinic_id,
+            message_id=message_id,
+        )
+        return {"ok": False, "reason": "buffer_no_row", "trace_id": trace_id}
+
+    accumulator.schedule_flush(
+        background_tasks=background_tasks,
+        clinic_id=clinic_id,
+        parsed=parsed,
+        watermark_buffer_id=watermark_buffer_id,
+        trace_id=trace_id,
+        pipeline_invoke=pipeline.invoke,
+    )
+
+    return {
+        "ok": True,
+        "trace_id": trace_id,
+        "message_id": message_id,
+        "buffer_id": watermark_buffer_id,
+    }
