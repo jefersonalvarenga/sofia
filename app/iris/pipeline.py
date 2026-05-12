@@ -27,6 +27,7 @@ follow-ups ([EASAA-142](../../../EASAA/issues/EASAA-142),
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
@@ -36,6 +37,7 @@ from app.agents.greeting.agent import GreetingAgent
 from app.agents.human_escalation.agent import HumanEscalationAgent
 from app.agents.knowledge.agent import KnowledgeSpecialist
 from app.agents.router.agent_iris import IRIS_ROUTER_MODEL, IrisRouterAgent
+from app.agents.scheduler.agent import SchedulerAgent
 from app.core.config import get_settings
 from app.core.pricing import compute_cost
 from app.core.telemetry import build_agent_run, extract_tokens_anthropic, log
@@ -45,7 +47,7 @@ from app.iris.evolution_client import (
     send_text_message,
 )
 from app.iris.schemas import ParsedMessage
-from app.session.manager import load_session, save_session
+from app.session.manager import load_session, load_services_context, save_session
 from services.iris.webhook import notify_receptionist
 
 
@@ -84,6 +86,10 @@ class IrisState(TypedDict, total=False):
     attribution_id: Optional[str]
     paused: bool
 
+    # ---- Scheduling ----
+    available_slots: List[str]
+    services_context: str
+
     # ---- Routing ----
     intents: List[Dict[str, str]]
     detected_intents: List[str]
@@ -106,6 +112,7 @@ class IrisState(TypedDict, total=False):
 _router_agent = IrisRouterAgent()
 _greeting_agent = GreetingAgent()
 _knowledge_agent = KnowledgeSpecialist()
+_scheduler_agent = SchedulerAgent()
 _escalation_agent = HumanEscalationAgent()
 
 
@@ -296,6 +303,33 @@ def _call_escalation(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return result
 
 
+def _extract_service_names(services_context: str) -> List[str]:
+    try:
+        ctx = json.loads(services_context)
+        return [s.get("name", "") for s in ctx.get("services", []) if s.get("name")]
+    except Exception:
+        return []
+
+
+def _call_scheduler(state: IrisState, scope_text: str) -> Dict[str, Any]:
+    current_stage = state.get("conversation_stage", "new")
+    if current_stage not in {"collecting_service", "presenting_slots", "booked"}:
+        current_stage = "collecting_service"
+
+    services_ctx = state.get("services_context") or load_services_context(state.get("clinic_id", ""))
+    service_names = _extract_service_names(services_ctx)
+
+    return _scheduler_agent.forward(
+        patient_message=scope_text or state.get("message", ""),
+        history=state.get("history", []),
+        available_slots=state.get("available_slots", []),
+        clinic_name=state.get("clinic_name", "Clínica"),
+        patient_name=state.get("patient_name") or state.get("push_name") or "Paciente",
+        stage=current_stage,
+        services_list=service_names,
+    )
+
+
 def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return {
         "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
@@ -311,6 +345,7 @@ def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
 SPECIALIST_REGISTRY: Dict[str, tuple[str, Callable[[IrisState, str], Dict[str, Any]]]] = {
     "GREETING": ("GreetingAgent", _call_greeting),
     "FAQ": ("KnowledgeSpecialist", _call_knowledge),
+    "SCHEDULE": ("Scheduler", _call_scheduler),
     "HUMAN_ESCALATION": ("HumanEscalation", _call_escalation),
 }
 
