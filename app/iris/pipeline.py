@@ -36,6 +36,7 @@ from langgraph.graph import END, StateGraph
 from app.agents.greeting.agent import GreetingAgent
 from app.agents.human_escalation.agent import HumanEscalationAgent
 from app.agents.knowledge.agent import KnowledgeSpecialist
+from app.agents.router.agent import SofiaRouterAgent
 from app.agents.router.agent_iris import IRIS_ROUTER_MODEL, IrisRouterAgent
 from app.agents.scheduler.agent import SchedulerAgent
 from app.core.config import get_settings
@@ -110,6 +111,7 @@ class IrisState(TypedDict, total=False):
 
 # Singletons — keep one instance per agent to avoid per-message client churn.
 _router_agent = IrisRouterAgent()
+_fallback_router_agent = SofiaRouterAgent()
 _greeting_agent = GreetingAgent()
 _knowledge_agent = KnowledgeSpecialist()
 _scheduler_agent = SchedulerAgent()
@@ -169,17 +171,19 @@ def node_load_context(state: IrisState) -> Dict[str, Any]:
 
 
 def node_detect_intents(state: IrisState) -> Dict[str, Any]:
-    """Classify the latest message via IrisRouterAgent (Anthropic + tool use)."""
+    """Classify the latest message via IrisRouterAgent (Anthropic + tool use).
+
+    Falls back to SofiaRouterAgent (DSPy + configured provider) when the
+    Anthropic call fails (e.g. missing ANTHROPIC_API_KEY, network error).
+    """
     sofia_version = get_settings().sofia_version
 
-    def _call() -> Dict[str, Any]:
+    def _call_iris() -> Dict[str, Any]:
         result = _router_agent.forward(
             latest_message=state["message"],
             history=state.get("history", []),
             conversation_stage=state.get("conversation_stage", "new"),
         )
-        # The router doesn't speak to the patient; we keep its decision in
-        # `data` so build_agent_run() captures it for the audit row.
         return {
             "messages": [],
             "conversation_stage": state.get("conversation_stage", "new"),
@@ -201,24 +205,67 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
         session_id=state.get("session_id", ""),
         language="pt-BR",
         sofia_version=sofia_version,
-        call=_call,
+        call=_call_iris,
     )
+
+    # If the IrisRouterAgent failed, fall back to SofiaRouterAgent (DSPy).
+    if run.get("status") == "error":
+        log.warning(
+            "iris.router.fallback",
+            trace_id=state.get("trace_id"),
+            error=run.get("reasoning"),
+        )
+
+        def _call_fallback() -> Dict[str, Any]:
+            result = _fallback_router_agent.forward(
+                latest_message=state["message"],
+                history=state.get("history", []),
+                conversation_stage=state.get("conversation_stage", "new"),
+            )
+            return {
+                "messages": [],
+                "conversation_stage": state.get("conversation_stage", "new"),
+                "reasoning": result.get("reasoning", ""),
+                "data": {
+                    "type": "router",
+                    "intents": [
+                        {"macro_state": i, "scope_text": state.get("message", "")}
+                        for i in result.get("detected_intents", ["UNCLASSIFIED"])
+                    ],
+                    "detected_intents": result.get("detected_intents", ["UNCLASSIFIED"]),
+                    "language": result.get("language", "pt-BR"),
+                    "confidence": 0.0,
+                },
+            }
+
+        run = build_agent_run(
+            agent_name="SofiaRouterAgent",
+            reason="iris.detect_intents.fallback",
+            trace_id=state.get("trace_id", ""),
+            clinic_id=state.get("clinic_id", ""),
+            session_id=state.get("session_id", ""),
+            language="pt-BR",
+            sofia_version=sofia_version,
+            call=_call_fallback,
+        )
 
     # IrisRouterAgent uses the Anthropic SDK directly. build_agent_run()
     # only knows how to read DSPy LM history, so we patch in real token
     # usage from the router's stashed last_response and recompute the cost
-    # against the Anthropic pricing table.
-    tokens = extract_tokens_anthropic(_router_agent.last_response)
-    run["prompt_tokens"] = tokens["prompt_tokens"]
-    run["completion_tokens"] = tokens["completion_tokens"]
-    run["total_tokens"] = tokens["total_tokens"]
-    run["cost_usd"] = str(
-        compute_cost(
-            IRIS_ROUTER_MODEL,
-            tokens["prompt_tokens"],
-            tokens["completion_tokens"],
+    # against the Anthropic pricing table.  Skip patching on the fallback
+    # path — the DSPy-based run already has correct tokens via extract_tokens().
+    if run.get("agent") == "IrisRouterAgent":
+        tokens = extract_tokens_anthropic(_router_agent.last_response)
+        run["prompt_tokens"] = tokens["prompt_tokens"]
+        run["completion_tokens"] = tokens["completion_tokens"]
+        run["total_tokens"] = tokens["total_tokens"]
+        run["cost_usd"] = str(
+            compute_cost(
+                IRIS_ROUTER_MODEL,
+                tokens["prompt_tokens"],
+                tokens["completion_tokens"],
+            )
         )
-    )
 
     data = run.get("data") or {}
     intents = data.get("intents") or [
@@ -330,6 +377,30 @@ def _call_scheduler(state: IrisState, scope_text: str) -> Dict[str, Any]:
     )
 
 
+def _call_reengage(state: IrisState, scope_text: str) -> Dict[str, Any]:
+    patient_name = (
+        state.get("patient_name")
+        or state.get("push_name")
+        or "Paciente"
+    )
+    name = patient_name if patient_name != "Paciente" else ""
+    greeting = f"Olá, {name}!" if name else "Olá!"
+    return {
+        "messages": [
+            {
+                "type": "text",
+                "content": (
+                    f"{greeting} Que bom que você voltou! "
+                    f"Como posso ajudar você hoje?"
+                ),
+            }
+        ],
+        "conversation_stage": state.get("conversation_stage", "active"),
+        "reasoning": "Patient re-engaging — welcome back message.",
+        "data": None,
+    }
+
+
 def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return {
         "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
@@ -346,6 +417,7 @@ SPECIALIST_REGISTRY: Dict[str, tuple[str, Callable[[IrisState, str], Dict[str, A
     "GREETING": ("GreetingAgent", _call_greeting),
     "FAQ": ("KnowledgeSpecialist", _call_knowledge),
     "SCHEDULE": ("Scheduler", _call_scheduler),
+    "REENGAGE": ("ReEngage", _call_reengage),
     "HUMAN_ESCALATION": ("HumanEscalation", _call_escalation),
 }
 

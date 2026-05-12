@@ -153,6 +153,16 @@ class IrisRouterAgent:
         self.model = model
         self.max_tokens = max_tokens
         self.last_response: Any = None
+        import os
+        if client is None and not os.getenv("ANTHROPIC_API_KEY"):
+            log.warning(
+                "iris.router.no_api_key",
+                model=self.model,
+                message=(
+                    "ANTHROPIC_API_KEY not set. IrisRouterAgent will fail at "
+                    "runtime. Set ANTHROPIC_API_KEY or configure a fallback router."
+                ),
+            )
 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
         if not history:
