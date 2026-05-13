@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from app.core.supabase_client import get_supabase
+from app.core.telemetry import log
 from app.session.models import SofiaState
 
 
@@ -176,6 +177,39 @@ def load_business_rules(clinic_id: str) -> str:
         .execute()
     )
     return json.dumps(result.data or [], ensure_ascii=False)
+
+
+def load_resource_for_service(clinic_id: str, service_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Resolve o Resource da clínica para um dado serviço.
+
+    Estratégia:
+      1. Se clinic_id tem apenas 1 resource ativo → retorna ele (caso mais comum)
+      2. Se tem múltiplos → retorna o primeiro 'generic' ou o primeiro da lista
+      3. Se sf_resources está vazia → retorna None (fallback gracioso, fluxo continua)
+
+    Retorna: {"id": UUID, "name": str, "type": "professional"|"room"|"generic"} ou None
+    """
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table("sf_resources")
+            .select("id, name, type")
+            .eq("clinic_id", clinic_id)
+            .eq("is_active", True)
+            .execute()
+        )
+        resources = result.data or []
+        if not resources:
+            return None
+        if len(resources) == 1:
+            return resources[0]
+        # Preferir generic quando há múltiplos (lógica futura: match por serviço)
+        generic = next((r for r in resources if r["type"] == "generic"), None)
+        return generic or resources[0]
+    except Exception as e:
+        log.warning("load_resource_for_service.error", error=str(e), clinic_id=clinic_id)
+        return None
 
 
 _STYLE_RULE_TYPES = {"tom_voz", "personalidade", "saudacao_exemplo", "fechamento", "estilo_resposta"}

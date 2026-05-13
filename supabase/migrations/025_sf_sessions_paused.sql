@@ -1,4 +1,4 @@
--- Migration 022 — sf_sessions.paused flag for escalation handoff
+-- Migration 025 — sf_sessions.paused flag for escalation handoff
 --
 -- EASAA-214 — Escalation specialist: acolhimento + flag paused.
 --

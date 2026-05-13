@@ -61,6 +61,8 @@ class SchedulerSignature(dspy.Signature):
        mid-sentence if it flows naturally, but never as an opener.
     8. Respond in the same language as the patient (usually pt-BR).
     9. When presenting slots, show the friendly label (e.g. "Qui, 26/02 às 09h"). Do NOT show the ISO code to the patient.
+
+    Clinic style: Always match the clinic_tone and personality_traits provided.
     """
 
     patient_message = dspy.InputField(desc="Latest message from the patient.")
@@ -70,6 +72,8 @@ class SchedulerSignature(dspy.Signature):
     clinic_name = dspy.InputField(desc="Name of the clinic.")
     patient_name = dspy.InputField(desc="Patient's name.")
     current_stage = dspy.InputField(desc="Current scheduling stage: collecting_service | presenting_slots | booked")
+    clinic_tone = dspy.InputField(desc="Clinic's communication tone (e.g. 'Informal', 'Elegante'). Match this tone.")
+    personality_traits = dspy.InputField(desc="Comma-separated personality traits. Embody these traits.")
 
     response_message = dspy.OutputField(desc="The response to send to the patient.")
     stage = dspy.OutputField(desc="Updated stage: collecting_service | presenting_slots | booked")
