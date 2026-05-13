@@ -456,10 +456,10 @@ class TestPipelineE2E:
             f"expected one specialist run per intent, got {specialist_runs!r}"
         )
         # First intent (FAQ informational) wired to the fake FAQResponder;
-        # second intent (HUMAN_ESCALATION) falls back deterministically until
-        # the escalation specialist ships.
+        # second intent (HUMAN_ESCALATION) is handled by the real
+        # HumanEscalation specialist (EASAA-214).
         run_agents = [run.get("agent") for run in specialist_runs]
-        assert run_agents == ["FAQResponder", "UnknownFallback"]
+        assert run_agents == ["FAQResponder", "HumanEscalation"]
 
         # ---- aggregator emitted one outbound message containing both replies ----
         assert len(outbound_payloads) == 1, (
@@ -468,10 +468,10 @@ class TestPipelineE2E:
         )
         aggregated = outbound_payloads[0]
         assert "Botox" in aggregated, aggregated
-        assert iris_pipeline.UNKNOWN_FALLBACK_TEXT in aggregated, aggregated
+        assert "recepcionista" in aggregated, aggregated
 
         # ---- audit trail captures both specialists ----
         activated = [row.get("agent_name") for row in supabase_fake.activations]
         assert "IrisRouterAgent" in activated
         assert "FAQResponder" in activated
-        assert "UnknownFallback" in activated
+        assert "HumanEscalation" in activated

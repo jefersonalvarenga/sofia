@@ -18,6 +18,16 @@ Run a single file:
 pytest tests/iris/test_pipeline_e2e.py -v
 ```
 
+### Smoke E2E
+
+Requires `ANTHROPIC_API_KEY` in env:
+
+```bash
+ANTHROPIC_API_KEY=sk-... pytest tests/iris/test_smoke_e2e.py -v
+```
+
+The test simulates 6 turns (greeting → FAQ → multi-intent → scheduling → confirmation) against real Anthropic, with mocked Supabase and Evolution. Verifies latency (<3s/turn LLM avg) and cost (<$0.05 total).
+
 If pytest blows up at collection with
 `sqlite3.OperationalError: attempt to write a readonly database`, your
 `$HOME` is not writable and the dspy/litellm disk cache cannot initialize.
@@ -39,6 +49,7 @@ when the env var is unset, so this is only necessary if you override it.
 | `test_router_iris.py` | Unit tests for `IrisRouterAgent` (Anthropic SDK + tool use). Covers tool schema, history formatting, intent normalization, and the C10 deterministic intent table (`oi → GREETING`, `agendar → SCHEDULE`, `blá blá → UNCLASSIFIED`). |
 | `test_evolution_client.py` | Unit tests for the Evolution send/persist client (C9). |
 | `test_lint_tenant_id.py` | AST scanner — every `supabase.table(...).select(...).execute()` chain in `app/iris/` and `app/session/manager.py` must filter by `clinic_id`. Exemptions require an inline `# tenant-lint: exempt — <reason>` comment. See [ADR 0001](../../docs/adr/0001-iris-tenant-isolation.md). |
+| `test_smoke_e2e.py` | **Smoke E2E** — drives the Iris pipeline through a full 6-turn conversation (greeting → faq → knowledge → scheduling) against **real Anthropic**. Supabase/Evolution are mocked. Requires `ANTHROPIC_API_KEY`. |
 
 ## Adding a new tenant-scoped query
 

@@ -9,9 +9,12 @@ You should receive a response within **48 hours**. If you do not receive a respo
 ## Responsible Disclosure
 
 We kindly ask that you:
-- Do not publicly disclose the vulnerability before we have had a chance to address it.
-- Provide sufficient details to reproduce and understand the issue.
-- Allow us reasonable time to fix the issue before any disclosure.
+
+1. Do not publicly disclose the vulnerability before we have had a chance to address it.
+2. Provide sufficient details to reproduce and understand the issue.
+3. Allow us reasonable time to fix the issue before any disclosure.
+4. Do not access or modify user data without permission.
+5. Act in good faith to avoid harm to the platform and its users.
 
 ## Scope
 

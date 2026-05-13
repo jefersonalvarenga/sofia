@@ -1,13 +1,13 @@
 """
 HumanEscalationAgent — deterministic agent, no LLM.
-Generates a transition message and sets requires_human=True.
+Generates the acolhimento (welcome) message and marks the conversation as paused.
 """
 
 from typing import Dict, Any, List
 
 
 class HumanEscalationAgent:
-    """Deterministic agent — reads assistant_name from state and builds transition message."""
+    """Deterministic agent — reads patient/assistant/clinic from state and builds transition message."""
 
     def forward(
         self,
@@ -15,18 +15,22 @@ class HumanEscalationAgent:
         assistant_name: str,
         clinic_name: str,
     ) -> Dict[str, Any]:
-        patient_greeting = f"{patient_name}, " if patient_name and patient_name != "Paciente" else ""
+        patient_greeting = ""
+        if patient_name and patient_name != "Paciente":
+            patient_greeting = f"{patient_name}, "
 
         message = (
-            f"{patient_greeting}vou transferir você para um de nossos atendentes agora! "
-            f"Em breve alguém da equipe da {clinic_name} entrará em contato. "
-            f"Obrigado(a) por nos contatar! 😊"
+            f"{patient_greeting}"
+            f"Vou te conectar com nossa recepcionista, "
+            f"ela te responde em instantes."
         )
 
         return {
             "messages": [{"type": "text", "content": message}],
+            "response_message": message,
+            "agent_name": "HumanEscalation",
             "conversation_stage": "human_escalation",
-            "reasoning": "Patient explicitly requested human agent.",
+            "reasoning": "Patient escalated to human — acolhimento sent, conversation paused.",
             "requires_human": True,
             "data": {
                 "type": "escalation",

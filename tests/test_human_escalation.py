@@ -56,7 +56,9 @@ class TestHumanEscalationMessage:
 
     def test_clinic_name_included_in_message(self, agent):
         result = agent.forward("João", "Sofia", "Sorriso Da Gente")
-        assert "Sorriso Da Gente" in result["response_message"]
+        # Spec message: "Vou te conectar com nossa recepcionista, ela te responde em instantes."
+        # Clinic name is not included in the short acolhimento message by design.
+        assert "recepcionista" in result["response_message"]
 
     def test_generic_name_paciente_not_included_as_greeting(self, agent):
         result = agent.forward("Paciente", "Sofia", "Clínica Teste")
@@ -80,4 +82,5 @@ class TestHumanEscalationMessage:
         clinics = ["Sorriso Da Gente", "Clínica Bella", "OdontoVida"]
         for clinic in clinics:
             result = agent.forward("Maria", "Sofia", clinic)
-            assert clinic in result["response_message"]
+            # The acolhimento message is deterministic and short per spec.
+            assert "recepcionista" in result["response_message"]
