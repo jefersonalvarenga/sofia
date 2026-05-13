@@ -29,6 +29,13 @@ class FAQResponderSignature(dspy.Signature):
     - Never invent information not present in services_context or business_rules.
     - Keep responses under 300 characters when possible.
     - Respond in the same language as the patient (usually pt-BR).
+
+    HARD RULE — Service gating: If the patient asks about a service or price NOT in service_names_list,
+    respond ONLY with: "Esse serviço não está disponível. Posso te ajudar com: {service_names_list}."
+    Do NOT invent, approximate, or partially answer for unlisted services or prices.
+
+    Clinic style: Always match the clinic_tone and personality_traits provided.
+    Reference attendance_flow steps when guiding the patient through the process.
     """
 
     patient_message = dspy.InputField(desc="Latest message from the patient.")
@@ -37,6 +44,10 @@ class FAQResponderSignature(dspy.Signature):
     patient_name = dspy.InputField(desc="Patient's name, or 'Paciente' if unknown.")
     services_context = dspy.InputField(desc="JSON with clinic services, prices, and active offers.")
     business_rules = dspy.InputField(desc="JSON array of clinic policies — insurance/convenios accepted, payment methods, opening hours, and operational rules. Check this first when the patient asks about insurance, payment, or policies.")
+    clinic_tone = dspy.InputField(desc="Clinic's communication tone (e.g. 'Informal', 'Elegante'). Match this tone in your response.")
+    personality_traits = dspy.InputField(desc="Comma-separated personality traits (e.g. 'empática, discreta'). Embody these traits.")
+    attendance_flow = dspy.InputField(desc="Ordered process steps the clinic follows (e.g. 'Apresentar portfólio → Direcionar para avaliação'). Reference these steps when guiding the patient.")
+    service_names_list = dspy.InputField(desc="Comma-separated list of service names registered for this clinic. You may ONLY discuss services and prices in this list. Any other service does not exist for this clinic.")
 
     response_message = dspy.OutputField(desc="The response message to send to the patient via WhatsApp.")
     reasoning = dspy.OutputField(desc="Brief reasoning (internal, not shown to patient).")

@@ -2,6 +2,7 @@
 FAQResponderAgent — answers patient questions about clinic services, prices, etc.
 """
 
+import json
 import dspy
 from typing import List, Dict, Any
 
@@ -13,6 +14,14 @@ class FAQResponderAgent(dspy.Module):
         super().__init__()
         self.process = dspy.ChainOfThought(FAQResponderSignature)
 
+    def _parse_service_names(self, services_context: str) -> str:
+        try:
+            ctx = json.loads(services_context)
+            names = [s.get("name", "") for s in ctx.get("services", []) if s.get("name")]
+            return ", ".join(names)
+        except Exception:
+            return ""
+
     def forward(
         self,
         patient_message: str,
@@ -21,8 +30,14 @@ class FAQResponderAgent(dspy.Module):
         patient_name: str,
         services_context: str,
         business_rules: str,
+        tone: str = "",
+        personality_traits: List[str] = None,
+        attendance_flow: List[str] = None,
     ) -> Dict[str, Any]:
         history_str = self._format_history(history)
+        traits_str = ", ".join(personality_traits) if personality_traits else ""
+        flow_str = " → ".join(attendance_flow) if attendance_flow else ""
+        service_names_str = self._parse_service_names(services_context)
 
         try:
             result = self.process(
@@ -32,6 +47,10 @@ class FAQResponderAgent(dspy.Module):
                 patient_name=patient_name or "Paciente",
                 services_context=services_context,
                 business_rules=business_rules,
+                clinic_tone=tone,
+                personality_traits=traits_str,
+                attendance_flow=flow_str,
+                service_names_list=service_names_str,
             )
             return {
                 "messages": [{"type": "text", "content": str(result.response_message).strip()}],
