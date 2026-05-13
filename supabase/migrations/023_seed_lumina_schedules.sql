@@ -1,4 +1,5 @@
--- Migration 017: seed Lumina Estética — Agenda Geral weekly schedule pattern
+-- Migration 023: seed Lumina Estética — Agenda Geral weekly schedule pattern
+-- (originally numbered 017; renumbered to 023 to resolve collision with 017_iris_messages_and_rls.sql and 017_cost_usd_in_agent_activations.sql)
 
 -- Ensure unique constraint exists for idempotent seed
 ALTER TABLE public.sf_resource_schedules

@@ -1,4 +1,5 @@
--- Migration 014: sf_resources — abstração da agenda (profissional, sala, genérica)
+-- Migration 022: sf_resources — abstração da agenda (profissional, sala, genérica)
+-- (originally numbered 014; renumbered to 022 to resolve collision with 014_seed_clinica_vitoria.sql)
 -- Modelo OOA: Organization → Unit (sf_clinics) → Resource → Channel
 -- Resource resolve QUAL agenda consultar ao buscar slots.
 
