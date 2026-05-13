@@ -37,3 +37,18 @@ htmlcov/
 
 # DSPy cache
 .dspy_cache/
+
+# Claude Code session artifacts (settings, agents, scheduled tasks)
+.claude/
+
+# Planning / GSD framework artifacts (substituido pelo vault em easyscale/kb)
+.planning/
+
+# Local CI/eval reports (regenerados sob demanda)
+ci-eval-report.txt
+
+# Supabase CLI cache
+supabase/.temp/
+
+# Conversations dump (uso local apenas, nunca commitar)
+conversations/
