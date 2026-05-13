@@ -1,11 +1,12 @@
 """
-Anthropic model pricing — canonical USD-per-million-tokens table.
+LLM model pricing — canonical USD-per-million-tokens table.
 
-Source: https://platform.claude.com/docs/en/docs/about-claude/models/overview
-Captured: 2026-05-07
+Sources:
+  - Anthropic: https://platform.claude.com/docs/en/docs/about-claude/models/overview (2026-05-07)
+  - OpenAI: https://openai.com/api/pricing/ (2026-05-13)
 
 Pricing lives in code (not in the database) so changes are auditable via PR.
-Bump this table whenever Anthropic publishes new pricing and reference the
+Bump this table whenever a provider publishes new pricing and reference the
 source URL in the commit message.
 """
 
@@ -36,22 +37,27 @@ PRICING_TABLE: Dict[str, Dict[str, Decimal]] = {
         "input_per_mtok": Decimal("5.00"),
         "output_per_mtok": Decimal("25.00"),
     },
+    # GPT-4o mini — $0.15 / input MTok, $0.60 / output MTok
+    "gpt-4o-mini": {
+        "input_per_mtok": Decimal("0.15"),
+        "output_per_mtok": Decimal("0.60"),
+    },
     # GPT-4.1 mini — $0.40 / input MTok, $1.60 / output MTok (OpenAI 2025)
     "gpt-4.1-mini": {
         "input_per_mtok": Decimal("0.40"),
         "output_per_mtok": Decimal("1.60"),
-    },
-    # DeepSeek V4 Flash — $0.14 / input MTok (cache miss), $0.28 / output MTok
-    # Used by GreetingAgent v17-v23 (non-thinking mode). Source: api-docs.deepseek.com 2026.
-    "deepseek-v4-flash": {
-        "input_per_mtok": Decimal("0.14"),
-        "output_per_mtok": Decimal("0.28"),
     },
     # GPT-5 Nano — $0.05 / input MTok, $0.40 / output MTok (OpenAI 2026).
     # Used by GreetingAgent v24+.
     "gpt-5-nano": {
         "input_per_mtok": Decimal("0.05"),
         "output_per_mtok": Decimal("0.40"),
+    },
+    # DeepSeek V4 Flash — $0.14 / input MTok (cache miss), $0.28 / output MTok
+    # Used by GreetingAgent v17-v23 (non-thinking mode). Source: api-docs.deepseek.com 2026.
+    "deepseek-v4-flash": {
+        "input_per_mtok": Decimal("0.14"),
+        "output_per_mtok": Decimal("0.28"),
     },
 }
 
