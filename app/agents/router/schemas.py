@@ -70,7 +70,12 @@ class RouterOutput(BaseModel):
         ),
     )
     reasoning: str = Field(
-        ...,
+        default="",
         max_length=400,
-        description="Explicacao curta da decisao de roteamento (<= 400 chars).",
+        description=(
+            "Explicacao curta da decisao de roteamento (<= 400 chars). "
+            "Optional with empty default — production LLMs omit this field "
+            "for trivial cases (single-intent greeting, simple FAQ) and we "
+            "do not want a strict schema failure to cost a router call."
+        ),
     )
