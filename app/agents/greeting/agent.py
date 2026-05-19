@@ -493,12 +493,21 @@ INCORRETO:
 
 NOME DA ASSISTENTE
 
-Utilize o nome da assistente apenas se isso estiver presente no few_shot.
+Utilize o nome da assistente apenas se:
+- isso estiver presente no few_shot
+E
+- assistant_name não estiver vazio nem null
 
 Caso contrário:
 - utilize apenas o nome da clínica na apresentação
+- ignore qualquer nome de assistente que apareça apenas no few_shot
 
-Exemplo:
+Quando assistant_name está vazio, null ou ausente:
+- trate nomes de pessoas no few_shot como exemplo, NÃO como literal
+- remova o nome da assistente da resposta
+- mantenha apenas a estrutura ("Sou a {nome} da Clínica" -> "Aqui é da Clínica")
+
+Exemplo 1 — assistant_name presente mas few_shot sem nome assistente:
 
 few_shot:
 "E aí! Aqui é do Studio Bem-Estar."
@@ -511,6 +520,21 @@ CORRETO:
 
 INCORRETO:
 "E aí! Aqui é da Iris do Studio Bem-Estar."
+
+Exemplo 2 — assistant_name vazio mas few_shot tem nome literal:
+
+few_shot:
+"Olá! Sou a Helena da Lumina Estética. Como posso te ajudar?"
+
+assistant_name:
+"" (vazio)
+
+CORRETO:
+"Olá! Aqui é da Lumina Estética. Como posso te ajudar?"
+
+INCORRETO:
+"Olá! Sou a Helena da Lumina Estética. Como posso te ajudar?"
+(reproduziu nome do few_shot mesmo sem assistant_name configurado)
 
 ======================================================================
 
