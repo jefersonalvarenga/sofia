@@ -59,6 +59,12 @@ PRICING_TABLE: Dict[str, Dict[str, Decimal]] = {
         "input_per_mtok": Decimal("0.14"),
         "output_per_mtok": Decimal("0.28"),
     },
+    # DeepSeek V4 Pro — $0.27 / input MTok (cache miss), $1.10 / output MTok.
+    # Used by KnowledgeAgent (RAG generation). Source: api-docs.deepseek.com 2026.
+    "deepseek-v4-pro": {
+        "input_per_mtok": Decimal("0.27"),
+        "output_per_mtok": Decimal("1.10"),
+    },
 }
 
 

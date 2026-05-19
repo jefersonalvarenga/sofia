@@ -1,28 +1,26 @@
 """
-Iris LangGraph subgraph (C8 / [EASAA-29](../../../EASAA/issues/EASAA-29)).
-
-Multi-intent pipeline ([EASAA-140](../../../EASAA/issues/EASAA-140)):
+Iris LangGraph subgraph — multi-agent pipeline (v2).
 
     START → load_context → detect_intents
           → dispatch_specialists → aggregate_response
           → save_session → send_evolution → END
 
-Reuses Sofia's `app.session.manager` so DNA/style and audit rows
-(`sf_sessions`, `sf_agent_activations`) stay in one place. Routing goes
-through `IrisRouterAgent` (C6) instead of `SofiaRouterAgent`. The router
-emits one or more `{macro_state, scope_text}` intents per inbound message;
-`dispatch_specialists` calls one specialist per intent (with the matching
-`scope_text` as input) and `aggregate_response` consolidates the N specialist
-replies into a single outbound message.
+Replaces the legacy IrisRouterAgent/SofiaRouterAgent + KnowledgeSpecialist
+Anthropic stack with the new agents built in the May 2026 sprint:
 
-Scope as of EASAA-140: only `GREETING` has a real specialist
-(`GreetingAgent`). Every other intent — including `UNCLASSIFIED` — falls
-through to a deterministic `unknown_fallback` so the patient still sees a
-reply. FAQ / Knowledge / Scheduler / Escalation specialists ship as
-follow-ups ([EASAA-142](../../../EASAA/issues/EASAA-142),
-[EASAA-143](../../../EASAA/issues/EASAA-143),
-[EASAA-144](../../../EASAA/issues/EASAA-144),
-[EASAA-145](../../../EASAA/issues/EASAA-145)).
+  - GreetingAgent          (deepseek-v4-flash, JSON output, v26 schema)
+  - RouterAgent            (deepseek-v4-flash, 8 intents + scope_text)
+  - ScheduleRouter         (deepseek-v4-flash, 11 sub-intents)
+  - KnowledgeAgent         (deepseek-v4-pro, RAG via pgvector)
+  - HumanEscalationAgent   (unchanged)
+
+Routing model:
+  - RouterAgent emits {intent, scope_text} list (informational → CTA → terminal)
+  - dispatch_specialists fans out: one specialist call per intent
+  - SCHEDULE is a guard-umbrella — when seen, we run the ScheduleRouter sub-step
+    with a mocked sequence and fall back to UNKNOWN for whichever sub-intent
+    it returns (sub-agents land in follow-up PRs)
+  - aggregate_response joins specialist replies in order
 """
 
 from __future__ import annotations
@@ -35,13 +33,12 @@ from langgraph.graph import END, StateGraph
 
 from app.agents.greeting.agent import GreetingAgent
 from app.agents.human_escalation.agent import HumanEscalationAgent
-from app.agents.knowledge.agent import KnowledgeSpecialist
-from app.agents.router.agent import SofiaRouterAgent
-from app.agents.router.agent_iris import IRIS_ROUTER_MODEL, IrisRouterAgent
+from app.agents.knowledge.agent import KnowledgeAgent
+from app.agents.router.agent import RouterAgent
+from app.agents.router.schedule_router import ScheduleRouter
 from app.agents.scheduler.agent import SchedulerAgent
 from app.core.config import get_settings
-from app.core.pricing import compute_cost
-from app.core.telemetry import build_agent_run, extract_tokens_anthropic, log
+from app.core.telemetry import build_agent_run, log
 from app.iris.evolution_client import (
     EvolutionAPIError,
     persist_outbound_message,
@@ -54,6 +51,27 @@ from services.iris.webhook import notify_receptionist
 
 UNKNOWN_FALLBACK_TEXT = "Ainda estou aprendendo. Em breve te ajudo melhor 😊"
 
+# Mocked schedule sequences. Pulled from the schedule-router spec — the upstream
+# Manager agent decides which sequence to activate per session in production.
+# For now we hardcode the evaluation flow as the default.
+SCHEDULE_SEQUENCE_EVALUATION = [
+    "SCHEDULE_INTAKE",
+    "SCHEDULE_CASHIER",
+    "SCHEDULE_EVALUATION",
+    "SCHEDULE_COMPLETION",
+]
+SCHEDULE_SEQUENCE_SERVICE = [
+    "SCHEDULE_CASHIER",
+    "SCHEDULE_SERVICE",
+    "SCHEDULE_SERVICE_PROTOCOL",
+    "SCHEDULE_COMPLETION",
+]
+SCHEDULE_SEQUENCE_CONFIRMATION = ["SCHEDULE_CONFIRMATION", "SCHEDULE_COMPLETION"]
+SCHEDULE_SEQUENCE_REMINDER = ["SCHEDULE_REMINDER", "SCHEDULE_COMPLETION"]
+
+# Fallback greeting few-shot when the clinic hasn't configured one yet.
+DEFAULT_GREETING_FEW_SHOT = "Olá! Como posso te ajudar?"
+
 
 class IrisState(TypedDict, total=False):
     """LangGraph state for the Iris pipeline.
@@ -62,7 +80,7 @@ class IrisState(TypedDict, total=False):
     reads, so we can hand the same dict to it without a bridge type.
     """
 
-    # ---- Inputs from webhook (C7) ----
+    # ---- Inputs from webhook ----
     message_id: str
     instance_name: str
     instance_id: str
@@ -99,6 +117,11 @@ class IrisState(TypedDict, total=False):
     router_reasoning: str
     router_confidence: float
 
+    # ---- Schedule sub-routing (populated when SCHEDULE in detected_intents) ----
+    schedule_sub_intent: Optional[str]
+    schedule_is_deviation: bool
+    schedule_session_data: List[Dict[str, Any]]
+
     # ---- Fan-out outputs (one entry per intent, same order) ----
     specialist_responses: List[Dict[str, str]]
 
@@ -110,12 +133,47 @@ class IrisState(TypedDict, total=False):
 
 
 # Singletons — keep one instance per agent to avoid per-message client churn.
-_router_agent = IrisRouterAgent()
-_fallback_router_agent = SofiaRouterAgent()
+_router_agent = RouterAgent()
+_schedule_router = ScheduleRouter()
 _greeting_agent = GreetingAgent()
-_knowledge_agent = KnowledgeSpecialist()
+_knowledge_agent = KnowledgeAgent()
 _scheduler_agent = SchedulerAgent()
 _escalation_agent = HumanEscalationAgent()
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+def resolve_schedule_sequence(state: IrisState) -> List[str]:
+    """Decide which schedule sub-flow this session is in.
+
+    MVP placeholder: always returns the evaluation sequence. A real Manager
+    agent will replace this in a follow-up PR — it will read trajectory state
+    (last interaction outcome, service of interest, whether a reminder is due,
+    etc.) and pick the appropriate sequence.
+
+    Hooks already exposed in state so the swap is mechanical:
+      - state["conversation_stage"]  → likely main signal
+      - state["history"]             → trajectory
+      - state["clinic_style"]        → clinic-specific defaults
+    """
+    return SCHEDULE_SEQUENCE_EVALUATION
+
+
+def _extract_service_names(services_context: str) -> List[str]:
+    try:
+        ctx = json.loads(services_context)
+        return [s.get("name", "") for s in ctx.get("services", []) if s.get("name")]
+    except Exception:
+        return []
+
+
+def _resolve_few_shot(state: IrisState) -> str:
+    """Pull the greeting few-shot from clinic_style with a sensible fallback."""
+    clinic_style = state.get("clinic_style") or {}
+    example = (clinic_style.get("greeting_example") or "").strip()
+    return example or DEFAULT_GREETING_FEW_SHOT
 
 
 # ============================================================================
@@ -149,8 +207,6 @@ def node_load_context(state: IrisState) -> Dict[str, Any]:
         ctx["paused"] = is_paused
         return ctx
     except Exception as exc:
-        # Graceful fallback so the pipeline still produces a fallback reply
-        # instead of crashing in the background task.
         log.error(
             "iris.node.load_context.error",
             trace_id=state.get("trace_id"),
@@ -171,14 +227,15 @@ def node_load_context(state: IrisState) -> Dict[str, Any]:
 
 
 def node_detect_intents(state: IrisState) -> Dict[str, Any]:
-    """Classify the latest message via IrisRouterAgent (Anthropic + tool use).
+    """Classify the latest message via RouterAgent (deepseek-v4-flash).
 
-    Falls back to SofiaRouterAgent (DSPy + configured provider) when the
-    Anthropic call fails (e.g. missing ANTHROPIC_API_KEY, network error).
+    Propagates the exception path (no silent fallback). If the router fails,
+    detected_intents will be empty and dispatch_specialists routes everything
+    to the deterministic UNKNOWN fallback.
     """
     sofia_version = get_settings().sofia_version
 
-    def _call_iris() -> Dict[str, Any]:
+    def _call_router() -> Dict[str, Any]:
         result = _router_agent.forward(
             latest_message=state["message"],
             history=state.get("history", []),
@@ -192,87 +249,26 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
                 "type": "router",
                 "intents": result.get("intents", []),
                 "detected_intents": result.get("detected_intents", []),
-                "language": result.get("language", "pt-BR"),
                 "confidence": result.get("confidence", 0.0),
             },
         }
 
     run = build_agent_run(
-        agent_name="IrisRouterAgent",
+        agent_name="RouterAgent",
         reason="iris.detect_intents",
         trace_id=state.get("trace_id", ""),
         clinic_id=state.get("clinic_id", ""),
         session_id=state.get("session_id", ""),
         language="pt-BR",
         sofia_version=sofia_version,
-        call=_call_iris,
+        call=_call_router,
     )
-
-    # If the IrisRouterAgent failed, fall back to SofiaRouterAgent (DSPy).
-    if run.get("status") == "error":
-        log.warning(
-            "iris.router.fallback",
-            trace_id=state.get("trace_id"),
-            error=run.get("reasoning"),
-        )
-
-        def _call_fallback() -> Dict[str, Any]:
-            result = _fallback_router_agent.forward(
-                latest_message=state["message"],
-                history=state.get("history", []),
-                conversation_stage=state.get("conversation_stage", "new"),
-            )
-            return {
-                "messages": [],
-                "conversation_stage": state.get("conversation_stage", "new"),
-                "reasoning": result.get("reasoning", ""),
-                "data": {
-                    "type": "router",
-                    "intents": [
-                        {"macro_state": i, "scope_text": state.get("message", "")}
-                        for i in result.get("detected_intents", ["UNCLASSIFIED"])
-                    ],
-                    "detected_intents": result.get("detected_intents", ["UNCLASSIFIED"]),
-                    "language": result.get("language", "pt-BR"),
-                    "confidence": 0.0,
-                },
-            }
-
-        run = build_agent_run(
-            agent_name="SofiaRouterAgent",
-            reason="iris.detect_intents.fallback",
-            trace_id=state.get("trace_id", ""),
-            clinic_id=state.get("clinic_id", ""),
-            session_id=state.get("session_id", ""),
-            language="pt-BR",
-            sofia_version=sofia_version,
-            call=_call_fallback,
-        )
-
-    # IrisRouterAgent uses the Anthropic SDK directly. build_agent_run()
-    # only knows how to read DSPy LM history, so we patch in real token
-    # usage from the router's stashed last_response and recompute the cost
-    # against the Anthropic pricing table.  Skip patching on the fallback
-    # path — the DSPy-based run already has correct tokens via extract_tokens().
-    if run.get("agent") == "IrisRouterAgent":
-        tokens = extract_tokens_anthropic(_router_agent.last_response)
-        run["prompt_tokens"] = tokens["prompt_tokens"]
-        run["completion_tokens"] = tokens["completion_tokens"]
-        run["total_tokens"] = tokens["total_tokens"]
-        run["cost_usd"] = str(
-            compute_cost(
-                IRIS_ROUTER_MODEL,
-                tokens["prompt_tokens"],
-                tokens["completion_tokens"],
-            )
-        )
 
     data = run.get("data") or {}
     intents = data.get("intents") or [
-        {"macro_state": "UNCLASSIFIED", "scope_text": state.get("message", "")}
+        {"intent": "UNCLASSIFIED", "scope_text": state.get("message", "")}
     ]
-    detected_intents = data.get("detected_intents") or [i["macro_state"] for i in intents]
-    language = data.get("language", "pt-BR")
+    detected_intents = data.get("detected_intents") or [i["intent"] for i in intents]
     primary_intent = detected_intents[-1] if detected_intents else "UNCLASSIFIED"
 
     log.info(
@@ -280,7 +276,6 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
         trace_id=state.get("trace_id"),
         intents=intents,
         primary_intent=primary_intent,
-        language=language,
         confidence=data.get("confidence", 0.0),
     )
 
@@ -288,42 +283,46 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
         "agent_runs": [run],
         "intents": intents,
         "detected_intents": detected_intents,
-        "language": language,
+        "language": "pt-BR",
         "primary_intent": primary_intent,
         "router_reasoning": run.get("reasoning", "") or "",
         "router_confidence": data.get("confidence", 0.0),
     }
 
 
-# ----------------------------------------------------------------------------
+# ============================================================================
 # Specialist registry
-# ----------------------------------------------------------------------------
+# ============================================================================
 #
-# Each entry maps a macro_state to a callable `(state, scope_text) -> run dict`
-# that mirrors `build_agent_run`'s `_call` signature. Unknown macro_states fall
-# back to `_call_unknown_fallback`. Specialists added in follow-up stories
-# (FAQ / Knowledge / Scheduler / Escalation) register here.
-
+# Each entry maps an intent value to a (agent_name, callable) tuple where the
+# callable is `(state, scope_text) -> agent_run-like dict`. Unknown intents
+# fall back to `_call_unknown_fallback`.
 
 def _call_greeting(state: IrisState, scope_text: str) -> Dict[str, Any]:
     patient_name = (
         state.get("patient_name")
         or state.get("push_name")
-        or "Paciente"
+        or None
     )
-    clinic_style = state.get("clinic_style") or {}
+    if patient_name == "Paciente":
+        patient_name = None
+
     return _greeting_agent.forward(
+        patient_message=scope_text or state.get("message", ""),
+        patient_intents=[],
         patient_name=patient_name,
         clinic_name=state.get("clinic_name", "Clínica"),
         assistant_name=state.get("assistant_name", "Iris"),
-        history_length=len(state.get("history", [])),
-        greeting_example=clinic_style.get("greeting_example", ""),
+        few_shot=_resolve_few_shot(state),
+        session_summary="",
+        recent_relevant_messages=state.get("history", []),
+        time_gap_hours=None,
     )
 
 
 def _call_knowledge(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return _knowledge_agent.forward(
-        question=scope_text,
+        question=scope_text or state.get("message", ""),
         clinic_name=state.get("clinic_name", "Clínica"),
         tenant_id=state.get("clinic_id", ""),
         history=state.get("history"),
@@ -350,31 +349,56 @@ def _call_escalation(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return result
 
 
-def _extract_service_names(services_context: str) -> List[str]:
-    try:
-        ctx = json.loads(services_context)
-        return [s.get("name", "") for s in ctx.get("services", []) if s.get("name")]
-    except Exception:
-        return []
-
-
 def _call_scheduler(state: IrisState, scope_text: str) -> Dict[str, Any]:
-    current_stage = state.get("conversation_stage", "new")
-    if current_stage not in {"collecting_service", "presenting_slots", "booked"}:
-        current_stage = "collecting_service"
+    """Run the schedule sub-router, then dispatch to the sub-agent it picks.
 
-    services_ctx = state.get("services_context") or load_services_context(state.get("clinic_id", ""))
-    service_names = _extract_service_names(services_ctx)
+    For MVP, sub-agents (intake/cashier/evaluation/service/etc.) are not
+    implemented yet, so we always fall back to the deterministic UNKNOWN
+    response after sub-routing. The sub-router run still produces a real
+    agent_run for telemetry — that's what lets us validate the sub-routing
+    decisions in prod before building the sub-agents.
+    """
+    sequence = resolve_schedule_sequence(state)
+    current_stage = state.get("conversation_stage", "new") or "new"
+    session_data = state.get("schedule_session_data") or []
 
-    return _scheduler_agent.forward(
-        patient_message=scope_text or state.get("message", ""),
+    sub_result = _schedule_router.forward(
+        latest_message=scope_text or state.get("message", ""),
         history=state.get("history", []),
-        available_slots=state.get("available_slots", []),
-        clinic_name=state.get("clinic_name", "Clínica"),
-        patient_name=state.get("patient_name") or state.get("push_name") or "Paciente",
-        stage=current_stage,
-        services_list=service_names,
+        sequence=sequence,
+        current_stage=current_stage,
+        session_data=session_data,
     )
+
+    next_intent = sub_result.get("next_intent", "SCHEDULE_FALLBACK")
+    is_deviation = sub_result.get("is_deviation", False)
+
+    log.info(
+        "iris.schedule_router.decision",
+        trace_id=state.get("trace_id"),
+        next_intent=next_intent,
+        is_deviation=is_deviation,
+        sequence=sequence,
+        current_stage=current_stage,
+    )
+
+    # No sub-agents wired yet → deterministic placeholder so the patient
+    # still sees a reply. When sub-agents ship, dispatch here.
+    return {
+        "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
+        "conversation_stage": state.get("conversation_stage", "new"),
+        "reasoning": (
+            f"ScheduleRouter chose {next_intent} (deviation={is_deviation}); "
+            "no sub-agent registered yet — UNKNOWN fallback returned."
+        ),
+        "data": {
+            "schedule_sub_intent": next_intent,
+            "schedule_is_deviation": is_deviation,
+            "schedule_session_data": sub_result.get("session_data", []),
+            "schedule_confidence": sub_result.get("confidence", 0.0),
+            "schedule_reasoning": sub_result.get("reasoning", ""),
+        },
+    }
 
 
 def _call_reengage(state: IrisState, scope_text: str) -> Dict[str, Any]:
@@ -413,47 +437,50 @@ def _call_unknown_fallback(state: IrisState, scope_text: str) -> Dict[str, Any]:
     }
 
 
+# Vocabulary from app.agents.router.intents.IntentType (8 values).
+# BUSINESS_INFO, TOPIC_KNOWLEDGE, INTAKE all currently route to the Knowledge
+# agent as the closest existing specialist — INTAKE gets a dedicated agent in
+# a follow-up PR; BUSINESS_INFO needs a small specialist that reads
+# sf_clinic_services / business_rules (also follow-up).
 SPECIALIST_REGISTRY: Dict[str, tuple[str, Callable[[IrisState, str], Dict[str, Any]]]] = {
     "GREETING": ("GreetingAgent", _call_greeting),
-    "FAQ": ("KnowledgeSpecialist", _call_knowledge),
-    "SCHEDULE": ("Scheduler", _call_scheduler),
+    "BUSINESS_INFO": ("KnowledgeAgent", _call_knowledge),
+    "TOPIC_KNOWLEDGE": ("KnowledgeAgent", _call_knowledge),
+    "INTAKE": ("KnowledgeAgent", _call_knowledge),
+    "SCHEDULE": ("ScheduleRouter", _call_scheduler),
     "REENGAGE": ("ReEngage", _call_reengage),
     "HUMAN_ESCALATION": ("HumanEscalation", _call_escalation),
+    "UNCLASSIFIED": ("UnknownFallback", _call_unknown_fallback),
 }
 
 
 def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
-    """Fan out: call one specialist per detected intent with its scope_text.
-
-    Specialist order matches `intents` order (informational → CTA last).
-    Each specialist call produces one `agent_run` row; the resulting text is
-    captured into `specialist_responses` and consolidated in
-    `node_aggregate_response`.
-    """
+    """Fan out: call one specialist per detected intent with its scope_text."""
     sofia_version = get_settings().sofia_version
     intents = state.get("intents") or []
     if not intents:
-        intents = [
-            {"macro_state": "UNCLASSIFIED", "scope_text": state.get("message", "")}
-        ]
+        intents = [{"intent": "UNCLASSIFIED", "scope_text": state.get("message", "")}]
 
     runs: List[Dict[str, Any]] = []
     responses: List[Dict[str, str]] = []
+    schedule_sub_intent: Optional[str] = None
+    schedule_is_deviation: bool = False
+    schedule_session_data: List[Dict[str, Any]] = []
 
     for intent in intents:
-        macro = intent.get("macro_state") or "UNCLASSIFIED"
+        macro = intent.get("intent") or "UNCLASSIFIED"
         scope = intent.get("scope_text") or state.get("message", "")
         agent_name, caller = SPECIALIST_REGISTRY.get(
             macro, ("UnknownFallback", _call_unknown_fallback)
         )
 
-        if agent_name == "UnknownFallback":
+        if agent_name == "UnknownFallback" and macro != "UNCLASSIFIED":
             log.info(
                 "iris.node.unknown_fallback",
                 trace_id=state.get("trace_id"),
                 clinic_id=state.get("clinic_id"),
                 node_name="unknown_fallback",
-                macro_state=macro,
+                intent=macro,
                 scope_text=scope,
             )
 
@@ -469,6 +496,13 @@ def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
         )
         runs.append(run)
 
+        # Capture schedule sub-router decision for state propagation.
+        if agent_name == "ScheduleRouter":
+            sub_data = run.get("data") or {}
+            schedule_sub_intent = sub_data.get("schedule_sub_intent")
+            schedule_is_deviation = bool(sub_data.get("schedule_is_deviation"))
+            schedule_session_data = sub_data.get("schedule_session_data") or []
+
         text: Optional[str] = None
         for msg in run.get("messages", []):
             if msg.get("type") == "text" and msg.get("content"):
@@ -476,7 +510,7 @@ def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
                 break
         responses.append(
             {
-                "macro_state": macro,
+                "intent": macro,
                 "scope_text": scope,
                 "response_text": text or "",
                 "agent_name": agent_name,
@@ -489,21 +523,25 @@ def node_dispatch_specialists(state: IrisState) -> Dict[str, Any]:
         if data.get("routing_hint"):
             routing_hint = data["routing_hint"]
 
-    return {
+    update: Dict[str, Any] = {
         "agent_runs": [*state.get("agent_runs", []), *runs],
         "specialist_responses": responses,
         "routing_hint": routing_hint,
     }
+    if schedule_sub_intent is not None:
+        update["schedule_sub_intent"] = schedule_sub_intent
+        update["schedule_is_deviation"] = schedule_is_deviation
+        update["schedule_session_data"] = schedule_session_data
+    return update
 
 
 def _consolidate(responses: List[Dict[str, str]]) -> Optional[str]:
     """Consolidate specialist replies into one outbound message.
 
     Keeps the router's informational → CTA ordering, drops empties, and joins
-    with paragraph breaks. With a single response we pass it through unchanged
-    so the existing single-intent UX is preserved. Multi-intent currently uses
-    plain concatenation by paragraph; a higher-quality LLM-driven rewrite
-    lands once the real specialists ship.
+    with paragraph breaks. With a single response we pass it through unchanged.
+    Multi-intent currently uses plain paragraph concatenation; an LLM-driven
+    rewrite can come later once specialists ship.
     """
     texts = [r["response_text"].strip() for r in responses if r.get("response_text", "").strip()]
     if not texts:
@@ -521,7 +559,7 @@ def node_aggregate_response(state: IrisState) -> Dict[str, Any]:
         "iris.node.aggregate_response",
         trace_id=state.get("trace_id"),
         intent_count=len(responses),
-        macro_states=[r.get("macro_state") for r in responses],
+        intents=[r.get("intent") for r in responses],
         empty=response_text is None,
     )
     return {"response_text": response_text}
@@ -589,7 +627,6 @@ async def node_send_evolution(state: IrisState) -> Dict[str, Any]:
 
     outbound_wamid = ((response or {}).get("key") or {}).get("id") or ""
     if not outbound_wamid:
-        # Fall back to a synthetic id so the audit row still persists.
         outbound_wamid = f"iris-out-{uuid.uuid4()}"
 
     try:
@@ -644,7 +681,7 @@ iris_graph = workflow.compile()
 
 
 # ============================================================================
-# Public dispatcher — kept stable for the C7 webhook handler
+# Public dispatcher — kept stable for the webhook handler
 # ============================================================================
 
 async def invoke(
@@ -700,5 +737,7 @@ async def invoke(
         "primary_intent": result.get("primary_intent"),
         "language": result.get("language", "pt-BR"),
         "specialist_responses": result.get("specialist_responses", []),
+        "schedule_sub_intent": result.get("schedule_sub_intent"),
+        "schedule_is_deviation": result.get("schedule_is_deviation"),
         "outbound_wamid": result.get("outbound_wamid"),
     }
