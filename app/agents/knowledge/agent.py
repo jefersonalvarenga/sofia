@@ -1,33 +1,70 @@
 """
-KnowledgeSpecialist — RAG sobre sf_procedure_kb (pgvector).
+KnowledgeAgent — RAG sobre sf_procedure_kb (pgvector).
 
-Responde perguntas de pacientes sobre procedimentos estéticos.
-Guardrails: não diagnostica, não prescreve, escala condições sensíveis.
+Responde perguntas técnicas de pacientes sobre procedimentos estéticos usando
+DeepSeek V4 Pro como modelo de geração. Stack consistente com os outros agentes
+da Iris (greeting, router, schedule-router) — o agent auto-gerencia seu LM
+via DEEPSEEK_API_KEY e não depende de init_dspy() global.
 
-Retrieval:
-  1. Tenta pgvector similarity search se embeddings existem (OpenAI text-embedding-3-small).
-  2. Fallback: ILIKE keyword para quando embeddings ainda não foram indexados.
+Retrieval híbrido (mesma lógica preservada do design original):
+  1. Pgvector cosine similarity via RPC `match_procedure_kb` (preferido).
+  2. Fallback ILIKE em title/body quando embeddings ainda não foram indexados
+     ou a query embedding falha.
+
+Guardrails médicos:
+  - Regex de termos sensíveis (`_SENSITIVE_RE`) detecta gravidez, anticoagulante,
+    doenças crônicas etc. Marca `sensitive_flag=True` e força CTA de avaliação
+    presencial.
+  - Modelo é instruído a NUNCA diagnosticar / prescrever, e a só usar info do
+    contexto retornado pelo RAG (não pode alucinar fora dos chunks).
+  - Se a base não tem informação relevante, agente diz isso honestamente e
+    pergunta se o paciente quer falar com a equipe.
+
+Output envelope segue padrão Greeting/Router/Schedule (messages + data),
+para o pipeline consumir de forma uniforme.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from anthropic import Anthropic
-from pydantic import BaseModel, Field
+import dspy
+from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import get_settings
 from app.core.supabase_client import get_supabase
 from app.core.telemetry import log
 
-KNOWLEDGE_HAIKU = "claude-haiku-4-5-20251001"
-KNOWLEDGE_SONNET = "claude-sonnet-4-6"
 
-# Conditions that require in-person evaluation — always set sensitive_flag=True.
-# Prefixes — no trailing \b because most terms appear as inflected forms
-# (grávida, anticoagulante, alérgica, diabetes, etc.).
+# ============================================================================
+# Configuration
+# ============================================================================
+
+KNOWLEDGE_MODEL = "deepseek/deepseek-v4-pro"
+KNOWLEDGE_TEMPERATURE = 0.2  # baixa mas não-zero — respostas técnicas com leveza
+KNOWLEDGE_MAX_TOKENS = 512  # margem confortável para resposta + sources + flags
+
+# DeepSeek thinking-mode disabled for low-latency single-turn answer.
+KNOWLEDGE_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
+
+EMBED_MODEL = "text-embedding-3-small"
+TOP_K_DEFAULT = 4
+TECHNICAL_FALLBACK = (
+    "Desculpa, tive um problema técnico aqui. Quer falar com nossa equipe?"
+)
+
+
+# ============================================================================
+# Sensitive-condition regex (preserved from previous implementation)
+#
+# Triggers `sensitive_flag=True` and forces the in-person CTA even if the LLM
+# decides otherwise. Prefixes (not anchored to \b at the end) because most
+# Portuguese terms appear inflected (grávida, anticoagulante, etc.).
+# ============================================================================
+
 _SENSITIVE_RE = re.compile(
     r"\b(gr[aá]vid|gestant|gestação|lactan|amament|"
     r"anticoagulant|varfarin|warfarin|heparin|aspirina|"
@@ -38,106 +75,111 @@ _SENSITIVE_RE = re.compile(
     r"câncer|cancer|oncolog|quimio|"
     r"transplante|imunossupressor|"
     r"lúpus|lupus|autoimune|esclerose|"
-    r"miastenia|parkinson|alzheimer)",
+    r"miastenia|parkinson|alzheimer|"
+    r"isotretinoína|roacutan)",
     re.IGNORECASE | re.UNICODE,
 )
 
-TOP_K = 4  # max chunks to retrieve
 
-SYSTEM_PROMPT = """Você é a Iris, assistente de IA da {clinic_name}.
-Você responde perguntas de pacientes sobre procedimentos estéticos.
+def _is_sensitive(question: str) -> bool:
+    """Best-effort detection of clinically sensitive context in the question."""
+    return bool(_SENSITIVE_RE.search(question or ""))
 
-GUARDRAILS MÉDICOS (não negociáveis):
-- Jamais diagnostique condições médicas.
-- Jamais prescreva medicamentos ou tratamentos.
-- Se a pergunta menciona condição de saúde sensível (gravidez, medicação, doença crônica, alergia),
-  explique que é necessária avaliação presencial com a equipe médica e que o paciente pode agendar.
-- Você pode descrever procedimentos: benefícios, duração de efeito, processo geral, cuidados pós.
-- Nunca invente informações que não estejam no contexto fornecido.
-- Se a informação não estiver no contexto, diga honestamente que não tem essa informação disponível.
 
-Responda em português claro e acessível. Seja objetiva e empática."""
-
-ANSWER_TOOL: Dict[str, Any] = {
-    "name": "knowledge_answer",
-    "description": "Resposta estruturada sobre procedimento estético com guardrails médicos.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "answer": {
-                "type": "string",
-                "description": (
-                    "Resposta clara e objetiva. "
-                    "Se sensitive_flag=true, inclua: 'isso depende de avaliação presencial "
-                    "— quer agendar uma consulta?'"
-                ),
-            },
-            "sources": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Títulos dos chunks consultados para formular a resposta.",
-            },
-            "requires_consultation": {
-                "type": "boolean",
-                "description": "True se a pergunta requer avaliação presencial para ser adequadamente respondida.",
-            },
-            "sensitive_flag": {
-                "type": "boolean",
-                "description": (
-                    "True se a pergunta menciona condição de saúde sensível "
-                    "(gravidez, medicação, doença crônica, alergia)."
-                ),
-            },
-        },
-        "required": ["answer", "sources", "requires_consultation", "sensitive_flag"],
-    },
-}
+# ============================================================================
+# Pydantic schema for the LLM output (mirrors what greeting/router use)
+# ============================================================================
 
 
 class KnowledgeOutput(BaseModel):
-    answer: str
-    sources: List[str] = Field(default_factory=list)
-    requires_consultation: bool = False
-    sensitive_flag: bool = False
+    answer: str = Field(..., description="Resposta final para o paciente (pt-BR).")
+    requires_consultation: bool = Field(
+        default=False,
+        description="True quando a pergunta exige avaliação presencial.",
+    )
+    sensitive_flag: bool = Field(
+        default=False,
+        description="True quando há condição de saúde sensível mencionada.",
+    )
+    sources_used: List[str] = Field(
+        default_factory=list,
+        description="Títulos dos chunks consultados (auditoria).",
+    )
+    reasoning: str = Field(
+        default="",
+        max_length=400,
+        description="Justificativa curta da resposta (debug).",
+    )
 
 
-def _is_sensitive(question: str) -> bool:
-    return bool(_SENSITIVE_RE.search(question))
+# ============================================================================
+# System prompt — gives the LLM the contract + guardrails
+# ============================================================================
+
+SYSTEM_PROMPT = """Você é a Iris, assistente da {clinic_name}, respondendo a uma pergunta técnica do paciente sobre um procedimento estético.
+
+REGRAS NÃO-NEGOCIÁVEIS:
+1. Use APENAS as informações fornecidas no bloco "Contexto da base de procedimentos". NUNCA invente dados.
+2. Se o Contexto não tem a informação necessária, diga honestamente que não tem essa info disponível e pergunte se o paciente quer falar com a equipe.
+3. Nunca diagnostique condições. Nunca prescreva medicamentos ou tratamentos específicos.
+4. Se a pergunta menciona condição sensível (gravidez, anticoagulante, doença crônica, alergia, isotretinoína, etc.) -> sensitive_flag=true E requires_consultation=true E inclua na resposta: "isso depende de avaliação presencial com a equipe médica — quer agendar uma consulta?"
+5. Responda em pt-BR claro, objetivo e empático. Máximo de 3 frases curtas, exceto quando a info técnica exigir mais.
+6. NUNCA use markdown na resposta (sem listas, negritos, headers).
+
+OUTPUT OBRIGATÓRIO: JSON com EXATAMENTE estes 5 campos no nível raiz:
+- "answer" (string): a mensagem que vai ao paciente.
+- "requires_consultation" (boolean): true se exige avaliação presencial.
+- "sensitive_flag" (boolean): true se há condição sensível.
+- "sources_used" (array of strings): títulos dos chunks que você usou.
+- "reasoning" (string, <= 400 chars): justificativa curta da decisão.
+
+Exemplos de saída:
+
+{{"answer":"O Botox dura em média 4 a 6 meses. O efeito começa a aparecer entre 3 e 7 dias após a aplicação, com resultado final em 7 a 14 dias.","requires_consultation":false,"sensitive_flag":false,"sources_used":["O que é Botox?"],"reasoning":"Pergunta direta sobre duracao, info no contexto chunk 1."}}
+
+{{"answer":"Como você está grávida, isso depende de avaliação presencial com a equipe médica — quer agendar uma consulta?","requires_consultation":true,"sensitive_flag":true,"sources_used":["Quem pode fazer Botox?"],"reasoning":"Gestante mencionada, contraindicacao no chunk 2, escalando."}}
+
+{{"answer":"Não tenho essa informação específica na nossa base agora. Posso te conectar com nossa equipe pra tirar essa dúvida — quer?","requires_consultation":false,"sensitive_flag":false,"sources_used":[],"reasoning":"Pergunta sobre seguro estetico, sem chunks relevantes."}}
+
+Responda APENAS JSON válido com os 5 campos obrigatórios."""
+
+
+# ============================================================================
+# Retrieval (preserved logic — pgvector first, ILIKE fallback)
+# ============================================================================
 
 
 def _embed_query(question: str) -> Optional[List[float]]:
-    """Generate embedding via OpenAI text-embedding-3-small. Returns None on failure."""
+    """Generate embedding via OpenAI text-embedding-3-small. None on failure."""
     try:
-        import openai  # optional dep; only used if key present
+        import openai  # lazy import; only used when key present
+
         api_key = get_settings().openai_api_key
         if not api_key:
             return None
         client = openai.OpenAI(api_key=api_key)
-        resp = client.embeddings.create(model="text-embedding-3-small", input=question)
+        resp = client.embeddings.create(model=EMBED_MODEL, input=question)
         return resp.data[0].embedding
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (telemetry-only, fall through to keyword)
         log.warning("knowledge.embed_query.failed", error=str(exc))
         return None
 
 
 def _retrieve_by_vector(
     tenant_id: str, embedding: List[float], top_k: int
-) -> List[Dict[str, str]]:
-    """Pgvector cosine similarity search."""
+) -> List[Dict[str, Any]]:
+    """Pgvector cosine similarity via Supabase RPC."""
     try:
         sb = get_supabase()
         vector_str = "[" + ",".join(str(v) for v in embedding) + "]"
-        result = (
-            sb.rpc(
-                "match_procedure_kb",
-                {
-                    "p_tenant_id": tenant_id,
-                    "p_embedding": vector_str,
-                    "p_top_k": top_k,
-                },
-            )
-            .execute()
-        )
+        result = sb.rpc(
+            "match_procedure_kb",
+            {
+                "p_tenant_id": tenant_id,
+                "p_embedding": vector_str,
+                "p_top_k": top_k,
+            },
+        ).execute()
         return result.data or []
     except Exception as exc:
         log.warning("knowledge.retrieve_vector.failed", error=str(exc))
@@ -146,17 +188,23 @@ def _retrieve_by_vector(
 
 def _retrieve_by_keyword(
     tenant_id: str, question: str, top_k: int
-) -> List[Dict[str, str]]:
-    """ILIKE keyword fallback when embeddings are absent."""
+) -> List[Dict[str, Any]]:
+    """ILIKE fallback. Used when embeddings missing OR vector retrieval fails."""
     try:
         sb = get_supabase()
-        # Extract meaningful words (≥4 chars, non-stopwords)
-        words = [w for w in re.findall(r"[a-záéíóúâêîôûãẽõüçñ]+", question.lower()) if len(w) >= 4]
+        words = [
+            w
+            for w in re.findall(r"[a-záéíóúâêîôûãẽõüçñ]+", question.lower())
+            if len(w) >= 4
+        ]
         if not words:
             words = question.lower().split()[:3]
 
-        query = sb.table("sf_procedure_kb").select("procedure, title, body").eq("tenant_id", tenant_id)
-        # OR across words — take first word as filter, extend with or_
+        query = (
+            sb.table("sf_procedure_kb")
+            .select("procedure, title, body")
+            .eq("tenant_id", tenant_id)
+        )
         if words:
             filters = [f"body.ilike.%{w}%,title.ilike.%{w}%" for w in words[:3]]
             query = query.or_(",".join(filters))
@@ -168,38 +216,166 @@ def _retrieve_by_keyword(
         return []
 
 
-def _retrieve(tenant_id: str, question: str, sensitive: bool) -> List[Dict[str, str]]:
-    """Retrieve relevant KB chunks; vector first, keyword fallback."""
+def _retrieve(
+    tenant_id: str, question: str, sensitive: bool, top_k: int
+) -> List[Dict[str, Any]]:
+    """Retrieve relevant chunks. Vector first; keyword fallback."""
     embedding = _embed_query(question)
     if embedding:
-        chunks = _retrieve_by_vector(tenant_id, embedding, TOP_K)
+        chunks = _retrieve_by_vector(tenant_id, embedding, top_k)
         if chunks:
             return chunks
 
-    # When sensitive, also fetch contraindication chunks explicitly.
-    if sensitive:
-        return _retrieve_by_keyword(tenant_id, question + " contraindicação gestante alergia", TOP_K)
-    return _retrieve_by_keyword(tenant_id, question, TOP_K)
+    # When sensitive, bias the keyword query toward contraindication chunks.
+    augmented = question + " contraindicação gestante alergia" if sensitive else question
+    return _retrieve_by_keyword(tenant_id, augmented, top_k)
 
 
-def _build_context(chunks: List[Dict[str, str]]) -> str:
+def _build_context(chunks: List[Dict[str, Any]]) -> str:
+    """Format chunks as a single context block for the LLM."""
     if not chunks:
-        return "Nenhuma informação encontrada na base de procedimentos."
+        return "(base de procedimentos sem entradas relevantes para essa pergunta)"
     parts = []
     for c in chunks:
-        proc = c.get("procedure", "")
-        title = c.get("title", "")
-        body = c.get("body", "")
-        parts.append(f"### {proc} — {title}\n{body}")
+        proc = (c.get("procedure") or "").strip()
+        title = (c.get("title") or "").strip()
+        body = (c.get("body") or "").strip()
+        header = f"{proc} — {title}" if proc and title else (proc or title or "(sem título)")
+        parts.append(f"### {header}\n{body}")
     return "\n\n".join(parts)
 
 
-class KnowledgeSpecialist:
-    """RAG specialist for procedure questions. Uses Haiku; upgrades to Sonnet for sensitive queries."""
+# ============================================================================
+# LM management (same pattern as RouterAgent / GreetingAgent)
+# ============================================================================
 
-    def __init__(self, client: Optional[Anthropic] = None) -> None:
-        self.client = client or Anthropic()
-        self.last_response: Any = None
+
+def _build_default_lm(model: str, max_tokens: int) -> Optional[dspy.LM]:
+    """Build the LM the knowledge agent uses by default."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        return None
+    try:
+        return dspy.LM(
+            model=model,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            temperature=KNOWLEDGE_TEMPERATURE,
+        )
+    except Exception as exc:
+        log.error("knowledge.lm_init_failed", error=str(exc))
+        return None
+
+
+# ============================================================================
+# Agent
+# ============================================================================
+
+
+class KnowledgeAgent:
+    """Iris knowledge agent — RAG-backed answers on procedure questions.
+
+    Drop-in replacement for the legacy ``KnowledgeSpecialist`` (Anthropic).
+    Runs on ``deepseek/deepseek-v4-pro`` (non-thinking). Auto-manages LM via
+    ``DEEPSEEK_API_KEY``.
+
+    Usage:
+        agent = KnowledgeAgent()
+        out = agent.forward(
+            question="quanto tempo dura o efeito do botox?",
+            clinic_name="Clínica Bloom",
+            tenant_id="0d6d8eaf-6efa-4aaf-9845-de4b0d0f608c",
+        )
+        # out["messages"] -> [{"type": "text", "content": "..."}]
+        # out["data"] -> {"answer", "sources", "requires_consultation",
+        #                 "sensitive_flag", "routing_hint", ...}
+    """
+
+    def __init__(
+        self,
+        lm: Optional[dspy.LM] = None,
+        model: str = KNOWLEDGE_MODEL,
+        max_tokens: int = KNOWLEDGE_MAX_TOKENS,
+        temperature: float = KNOWLEDGE_TEMPERATURE,
+        top_k: int = TOP_K_DEFAULT,
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_k = top_k
+        self._lm_override = lm
+        self._default_lm: Optional[dspy.LM] = None
+
+    def _get_lm(self) -> dspy.LM:
+        if self._lm_override is not None:
+            return self._lm_override
+        if self._default_lm is None:
+            self._default_lm = _build_default_lm(self.model, self.max_tokens)
+        if self._default_lm is not None:
+            return self._default_lm
+        lm = dspy.settings.lm
+        if lm is None:
+            raise RuntimeError(
+                "KnowledgeAgent: no LM available. Set DEEPSEEK_API_KEY, call init_dspy(), "
+                "or pass lm= to constructor."
+            )
+        return lm
+
+    def _build_user_prompt(
+        self,
+        question: str,
+        history: List[Dict[str, str]],
+        context: str,
+    ) -> str:
+        history_block = self._format_history(history)
+        return (
+            f"Contexto da base de procedimentos:\n{context}\n\n"
+            f"Histórico recente (últimos turnos, opcional):\n{history_block}\n\n"
+            f"Pergunta do paciente:\n{question}\n\n"
+            f"Responda em JSON conforme as regras."
+        )
+
+    def _format_history(self, history: List[Dict[str, str]]) -> str:
+        if not history:
+            return "(sem histórico)"
+        lines = []
+        for turn in history[-5:]:
+            role = turn.get("role", "?")
+            content = turn.get("content", "")
+            prefix = "Paciente" if role in ("human", "patient") else role
+            lines.append(f"{prefix}: {content}")
+        return "\n".join(lines)
+
+    def _call_lm(self, system: str, user_prompt: str) -> str:
+        lm = self._get_lm()
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ]
+        call_kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "response_format": {"type": "json_object"},
+        }
+        if KNOWLEDGE_EXTRA_BODY:
+            call_kwargs["extra_body"] = KNOWLEDGE_EXTRA_BODY
+        outputs = lm(**call_kwargs)
+        if not outputs:
+            raise ValueError("knowledge LM returned no outputs")
+        return outputs[0]
+
+    def _parse(self, raw_content: str) -> KnowledgeOutput:
+        try:
+            payload = json.loads(raw_content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"knowledge LM returned non-JSON content: {exc}") from exc
+        try:
+            return KnowledgeOutput.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError(
+                f"knowledge output failed Pydantic validation: {exc}"
+            ) from exc
 
     def forward(
         self,
@@ -208,91 +384,81 @@ class KnowledgeSpecialist:
         tenant_id: str,
         history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
+        history = history or []
         sensitive = _is_sensitive(question)
-        model = KNOWLEDGE_SONNET if sensitive else KNOWLEDGE_HAIKU
 
-        chunks = _retrieve(tenant_id, question, sensitive)
+        chunks = _retrieve(tenant_id, question, sensitive, self.top_k)
         context = _build_context(chunks)
-        source_titles = [c.get("title", "") for c in chunks if c.get("title")]
+        chunk_titles = [c.get("title", "") for c in chunks if c.get("title")]
 
-        system = SYSTEM_PROMPT.format(clinic_name=clinic_name)
-        user_content = (
-            f"Informações de procedimentos disponíveis:\n{context}\n\n"
-            f"Pergunta do paciente: {question}"
-        )
+        system_prompt = SYSTEM_PROMPT.format(clinic_name=clinic_name)
+        user_prompt = self._build_user_prompt(question, history, context)
 
         try:
-            response = self.client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=system,
-                tools=[ANSWER_TOOL],
-                tool_choice={"type": "tool", "name": "knowledge_answer"},
-                messages=[{"role": "user", "content": user_content}],
+            raw_content = self._call_lm(system_prompt, user_prompt)
+            parsed = self._parse(raw_content)
+        except Exception as exc:
+            log.error(
+                "knowledge.forward.failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                model=self.model,
             )
-            self.last_response = response
+            return {
+                "messages": [{"type": "text", "content": TECHNICAL_FALLBACK}],
+                "conversation_stage": "knowledge",
+                "reasoning": f"source=fallback | error={type(exc).__name__}",
+                "data": {
+                    "answer": TECHNICAL_FALLBACK,
+                    "sources": chunk_titles,
+                    "requires_consultation": False,
+                    "sensitive_flag": sensitive,
+                    "routing_hint": None,
+                    "chunk_count": len(chunks),
+                },
+            }
 
-            payload = self._extract_tool_input(response)
-            if payload is None:
-                raise ValueError("knowledge_answer tool call missing")
-
-            out = KnowledgeOutput.model_validate(payload)
-
-            # Regex guard: sensitive_flag must be True if question contains triggers.
-            if sensitive and not out.sensitive_flag:
-                out.sensitive_flag = True
-                out.requires_consultation = True
-
-            # Append in-person CTA when flagged.
-            if out.sensitive_flag and "avaliação presencial" not in out.answer:
-                out.answer += (
-                    "\n\nIsso depende de uma avaliação presencial com a nossa equipe médica "
-                    "— quer agendar uma consulta?"
+        # Regex-driven guardrail wins over the LLM: if we detected sensitive
+        # context, force the flags + append CTA. This protects against the LLM
+        # accidentally minimizing a contraindication.
+        if sensitive:
+            parsed.sensitive_flag = True
+            parsed.requires_consultation = True
+            cta_phrase = "avaliação presencial"
+            if cta_phrase not in parsed.answer.lower():
+                parsed.answer = parsed.answer.rstrip() + (
+                    " Isso depende de uma avaliação presencial com a nossa equipe "
+                    "médica — quer agendar uma consulta?"
                 )
 
-        except Exception as exc:
-            log.error("knowledge.forward.failed", error=str(exc), model=model)
-            self.last_response = None
-            fallback_answer = (
-                "No momento não consigo acessar nossa base de procedimentos. "
-                "Posso te ajudar com mais alguma coisa, ou prefere falar com nossa equipe?"
-            )
-            out = KnowledgeOutput(
-                answer=fallback_answer,
-                sources=source_titles,
-                requires_consultation=False,
-                sensitive_flag=False,
-            )
+        routing_hint = "SCHEDULE_NEXT" if parsed.sensitive_flag else None
 
         log.info(
             "knowledge.forward.ok",
-            model=model,
+            model=self.model,
             sensitive=sensitive,
-            requires_consultation=out.requires_consultation,
-            sensitive_flag=out.sensitive_flag,
+            requires_consultation=parsed.requires_consultation,
+            sensitive_flag=parsed.sensitive_flag,
             chunk_count=len(chunks),
         )
 
         return {
-            "messages": [{"type": "text", "content": out.answer}],
+            "messages": [{"type": "text", "content": parsed.answer}],
             "conversation_stage": "knowledge",
-            "reasoning": f"KnowledgeSpecialist ({model}); sensitive={sensitive}; chunks={len(chunks)}",
+            "reasoning": (
+                f"source=llm | model={self.model} | sensitive={sensitive} | "
+                f"chunks={len(chunks)} | llm_reasoning={parsed.reasoning}"
+            ),
             "data": {
-                "answer": out.answer,
-                "sources": out.sources,
-                "requires_consultation": out.requires_consultation,
-                "sensitive_flag": out.sensitive_flag,
-                "routing_hint": "SCHEDULE_NEXT" if out.sensitive_flag else None,
+                "answer": parsed.answer,
+                "sources": parsed.sources_used or chunk_titles,
+                "requires_consultation": parsed.requires_consultation,
+                "sensitive_flag": parsed.sensitive_flag,
+                "routing_hint": routing_hint,
+                "chunk_count": len(chunks),
             },
         }
 
-    def _extract_tool_input(self, response: Any) -> Optional[Dict[str, Any]]:
-        for block in getattr(response, "content", []) or []:
-            if (
-                getattr(block, "type", None) == "tool_use"
-                and getattr(block, "name", None) == "knowledge_answer"
-            ):
-                payload = getattr(block, "input", None)
-                if isinstance(payload, dict):
-                    return payload
-        return None
+
+# Back-compat alias — pipeline may still import KnowledgeSpecialist.
+KnowledgeSpecialist = KnowledgeAgent
