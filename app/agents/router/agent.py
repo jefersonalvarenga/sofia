@@ -4,8 +4,9 @@ RouterAgent — Iris primary router.
 Spec: kb/07-MVP/Tech/03-Discussoes/02 - Spec Router Primario.md
 
 Classifies the patient's latest WhatsApp message into one or more intents
-from the 8-value IntentType vocabulary. Runs on gpt-4o-mini via DSPy
-(LiteLLM under the hood) for provider-agnostic structured output.
+from the 8-value IntentType vocabulary. Runs on DeepSeek V4 Flash
+(non-thinking mode) via DSPy/LiteLLM. Same model+config as GreetingAgent
+for stack consistency.
 
 Differences vs the legacy IrisRouterAgent (deleted in this PR):
   - 8 intents (BUSINESS_INFO + TOPIC_KNOWLEDGE split, INTAKE added)
@@ -13,7 +14,9 @@ Differences vs the legacy IrisRouterAgent (deleted in this PR):
   - No medical guardrail in the router (KnowledgeAgent owns that)
   - Confidence threshold (default 0.70) downgrades to UNCLASSIFIED
   - No DSPy fallback agent (legacy SofiaRouterAgent deleted)
-  - Provider is OpenAI gpt-4o-mini, not Claude Haiku
+  - Provider is DeepSeek V4 Flash non-thinking (was gpt-4o-mini in initial spec).
+    The agent self-manages its LM: it does NOT rely on the global
+    ``init_dspy()`` configuration.
 """
 
 from __future__ import annotations
@@ -32,7 +35,12 @@ from .normalize import normalize_intents
 from .schemas import RouterOutput
 
 
-ROUTER_MODEL = "gpt-4o-mini"
+ROUTER_MODEL = "deepseek/deepseek-v4-flash"
+ROUTER_TEMPERATURE = 0.0
+ROUTER_MAX_TOKENS = 384
+
+# DeepSeek thinking-mode disabled for low-latency single-turn classification.
+ROUTER_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
 
 DEFAULT_CONFIDENCE_THRESHOLD = 0.70
 MIN_CONFIDENCE_THRESHOLD = 0.50
@@ -89,8 +97,33 @@ def _read_threshold() -> float:
     return min(1.0, value)
 
 
+def _build_default_lm(model: str, max_tokens: int) -> Optional[dspy.LM]:
+    """Build the LM the router uses by default (mirrors GreetingAgent pattern).
+
+    Reads ``DEEPSEEK_API_KEY`` from the environment. Returns None when the
+    key is absent so callers can fall back to ``dspy.settings.lm`` for tests.
+    """
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        return None
+    try:
+        return dspy.LM(
+            model=model,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            temperature=ROUTER_TEMPERATURE,
+        )
+    except Exception as exc:
+        log.error("router.lm_init_failed", error=str(exc))
+        return None
+
+
 class RouterAgent:
     """Iris primary router. Drop-in replacement for IrisRouterAgent.
+
+    Runs on ``deepseek/deepseek-v4-flash`` (non-thinking mode) — same stack
+    as ``GreetingAgent``. The agent self-manages its LM via
+    ``DEEPSEEK_API_KEY``; it does NOT rely on ``init_dspy()`` global config.
 
     Usage:
         agent = RouterAgent()
@@ -109,22 +142,32 @@ class RouterAgent:
         self,
         lm: Optional[dspy.LM] = None,
         model: str = ROUTER_MODEL,
-        max_tokens: int = 256,
-        temperature: float = 0.0,
+        max_tokens: int = ROUTER_MAX_TOKENS,
+        temperature: float = ROUTER_TEMPERATURE,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._lm_override = lm
+        self._default_lm: Optional[dspy.LM] = None
 
     def _get_lm(self) -> dspy.LM:
-        """Resolve the active LM (constructor override -> dspy.settings.lm)."""
+        """Resolve the active LM in priority order:
+        1. constructor override
+        2. lazily-built default LM from DEEPSEEK_API_KEY
+        3. dspy.settings.lm (for tests that already configured global)
+        """
         if self._lm_override is not None:
             return self._lm_override
+        if self._default_lm is None:
+            self._default_lm = _build_default_lm(self.model, self.max_tokens)
+        if self._default_lm is not None:
+            return self._default_lm
         lm = dspy.settings.lm
         if lm is None:
             raise RuntimeError(
-                "RouterAgent: no DSPy LM configured. Call init_dspy() or pass lm= to constructor."
+                "RouterAgent: no LM available. Set DEEPSEEK_API_KEY, call init_dspy(), "
+                "or pass lm= to constructor."
             )
         return lm
 
@@ -158,12 +201,15 @@ class RouterAgent:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-        outputs = lm(
-            messages=messages,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            response_format={"type": "json_object"},
-        )
+        call_kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "response_format": {"type": "json_object"},
+        }
+        if ROUTER_EXTRA_BODY:
+            call_kwargs["extra_body"] = ROUTER_EXTRA_BODY
+        outputs = lm(**call_kwargs)
         if not outputs:
             raise ValueError("router LM returned no outputs")
         return outputs[0]
