@@ -50,27 +50,41 @@ SYSTEM_PROMPT = """Router da Iris (recepcionista IA para clinicas de estetica). 
 
 Intents (8):
 - BUSINESS_INFO: preco, horario, endereco, convenio, lista de servicos.
-- TOPIC_KNOWLEDGE: como servico funciona, contraindicacoes, recuperacao, "posso fazer X estando Y". Inclui gatilho clinico (NAO usar HUMAN_ESCALATION pra isso).
+- TOPIC_KNOWLEDGE: pergunta NEUTRA sobre como servico funciona, contraindicacoes, recuperacao. Paciente perguntando sem se colocar como interessado.
 - REENGAGE: retomada de conversa inativa (use conversation_stage como dica).
 - GREETING: "oi", "bom dia", primeira mensagem sem outra intencao.
 - UNCLASSIFIED: fallback / sticker / fora de contexto.
-- INTAKE: paciente declara INTERESSE esperando consultoria — "quero fazer botox". Difere de SCHEDULE (intake = qualificacao; schedule = marcacao).
-- SCHEDULE: agendar/cancelar/remarcar — "quero marcar", "tem horario amanha?".
+- INTAKE: paciente expoe sintoma/queixa OU declara desejo de fazer procedimento, SEM verbo de agendamento. Ex: "quero fazer X", "tenho marca/ruga/mancha", "minha pele Y".
+- SCHEDULE: paciente quer AGENDAR / CANCELAR / REMARCAR. Verbos-chave: "marcar", "agendar", "cancelar", "remarcar", "tem horario". Mesmo que aparecam servicos especificos.
 - HUMAN_ESCALATION: pedido EXPLICITO de humano/atendente.
 
-Regras:
-- Multi-intent: detecte TODAS as intents aplicaveis. Cada uma com {intent, scope_text} (scope_text = trecho literal que originou).
+Regra-chave SCHEDULE vs INTAKE (CRITICA):
+- "quero MARCAR/AGENDAR [servico]" -> SCHEDULE (verbo de agendamento)
+- "quero FAZER [servico]" -> INTAKE (declara desejo, sem pedir agenda)
+- "tem horario...?" -> SCHEDULE
+- "tenho [problema], o que voces fazem?" -> INTAKE
+
+Regra-chave INTAKE vs TOPIC_KNOWLEDGE:
+- Paciente SE COLOCA no problema ("tenho X", "minha pele", "estou com Y", "quero fazer Z") -> INTAKE
+- Pergunta NEUTRA sobre procedimento ("como funciona X?", "X doi?", "posso fazer X estando Y?") -> TOPIC_KNOWLEDGE
+
+Regras gerais:
+- Multi-intent: detecte TODAS as intents aplicaveis. Cada uma com {intent, scope_text}.
 - Mesma intent nao repete.
-- confidence em [0,1] agregado. Se ambiguo, use < 0.70.
-- Sempre pt-BR. reasoning curto (<= 400 chars), opcional.
+- OUTPUT OBRIGATORIO: JSON com EXATAMENTE 3 campos no nivel raiz: "intents" (array), "confidence" (float 0-1), "reasoning" (string). NUNCA omita confidence.
+- confidence em [0,1] agregado. Se ambiguo, use < 0.70. Use sempre numerico.
+- Sempre pt-BR. reasoning curto (<= 400 chars).
 
 Exemplos:
-- "voces aceitam Unimed? quero agendar" -> intents=[{intent:"BUSINESS_INFO",scope_text:"voces aceitam Unimed?"},{intent:"SCHEDULE",scope_text:"quero agendar"}], confidence=0.88
-- "posso fazer botox amamentando?" -> intents=[{intent:"TOPIC_KNOWLEDGE",scope_text:"posso fazer botox amamentando?"}], confidence=0.88 (NAO HUMAN_ESCALATION)
-- "quero fazer botox" -> intents=[{intent:"INTAKE",scope_text:"quero fazer botox"}], confidence=0.90
-- "quero falar com atendente" -> intents=[{intent:"HUMAN_ESCALATION",scope_text:"quero falar com atendente"}], confidence=0.97
+- "voces aceitam Unimed? quero agendar" -> {"intents":[{"intent":"BUSINESS_INFO","scope_text":"voces aceitam Unimed?"},{"intent":"SCHEDULE","scope_text":"quero agendar"}],"confidence":0.88,"reasoning":"info de convenio + intencao de agendamento"}
+- "posso fazer botox amamentando?" -> {"intents":[{"intent":"TOPIC_KNOWLEDGE","scope_text":"posso fazer botox amamentando?"}],"confidence":0.88,"reasoning":"pergunta neutra sobre contraindicacao"}
+- "quero fazer botox" -> {"intents":[{"intent":"INTAKE","scope_text":"quero fazer botox"}],"confidence":0.90,"reasoning":"declaracao de interesse, sem verbo de agendamento"}
+- "quero marcar uma limpeza de pele" -> {"intents":[{"intent":"SCHEDULE","scope_text":"quero marcar uma limpeza de pele"}],"confidence":0.92,"reasoning":"verbo 'marcar' -> SCHEDULE, mesmo com servico especifico"}
+- "tenho marcas de expressao na testa, o que voces fazem?" -> {"intents":[{"intent":"INTAKE","scope_text":"tenho marcas de expressao na testa, o que voces fazem?"}],"confidence":0.85,"reasoning":"paciente expoe problema proprio buscando solucao"}
+- "como funciona o preenchimento?" -> {"intents":[{"intent":"TOPIC_KNOWLEDGE","scope_text":"como funciona o preenchimento?"}],"confidence":0.90,"reasoning":"pergunta neutra"}
+- "quero falar com atendente" -> {"intents":[{"intent":"HUMAN_ESCALATION","scope_text":"quero falar com atendente"}],"confidence":0.97,"reasoning":"pedido explicito de humano"}
 
-Responda APENAS JSON valido."""
+Responda APENAS JSON valido com os 3 campos obrigatorios."""
 
 
 def _read_threshold() -> float:
