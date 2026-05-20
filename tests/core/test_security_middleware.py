@@ -14,6 +14,7 @@ that ride through the same proxy. The fix has two parts:
 """
 
 from datetime import datetime, timedelta
+from typing import Tuple
 
 import pytest
 from fastapi import FastAPI
@@ -23,41 +24,37 @@ from starlette.testclient import TestClient
 from app.core.security import SecurityMiddleware
 
 
-def _build_app() -> FastAPI:
-    app = FastAPI()
-    app.add_middleware(SecurityMiddleware, rate_limit=1000)
+def _build_app() -> Tuple[TestClient, SecurityMiddleware]:
+    """Build a minimal FastAPI app wrapped with SecurityMiddleware.
 
-    @app.get("/v1/iris/webhook/evolution")
-    @app.post("/v1/iris/webhook/evolution")
+    We construct the middleware instance explicitly (rather than via
+    `app.add_middleware`) so the test has a direct reference to
+    `middleware.blocked_ips` for assertions.
+    """
+    inner = FastAPI()
+
+    @inner.get("/v1/iris/webhook/evolution")
+    @inner.post("/v1/iris/webhook/evolution")
     async def webhook_evolution():
         return JSONResponse({"ok": True})
 
-    @app.get("/v1/health")
+    @inner.get("/v1/health")
     async def health():
         return JSONResponse({"status": "ok"})
 
-    @app.get("/v1/anything")
+    @inner.get("/v1/anything")
     async def anything():
         return JSONResponse({"ok": True})
 
-    return app
-
-
-def _get_middleware(client: TestClient) -> SecurityMiddleware:
-    """Walk the Starlette middleware stack to grab the SecurityMiddleware instance."""
-    app = client.app.middleware_stack
-    while app is not None:
-        if isinstance(app, SecurityMiddleware):
-            return app
-        app = getattr(app, "app", None)
-    raise RuntimeError("SecurityMiddleware not found in stack")
+    middleware = SecurityMiddleware(inner, rate_limit=1000)
+    client = TestClient(middleware)
+    return client, middleware
 
 
 class TestProxyAwareClientIP:
     def test_x_forwarded_for_first_ip_is_used_for_blocking(self):
         """RED 1: real client IP (first in XFF chain) is the one banned, not the proxy."""
-        app = _build_app()
-        client = TestClient(app)
+        client, middleware = _build_app()
 
         # Trigger a suspicious-path block. The TestClient default `client.host` is
         # `testclient` (acts as the "proxy"); the real client is 1.2.3.4.
@@ -67,7 +64,6 @@ class TestProxyAwareClientIP:
         )
         assert resp.status_code == 403
 
-        middleware = _get_middleware(client)
         # The REAL client should be blocked, not the proxy.
         assert "1.2.3.4" in middleware.blocked_ips
         assert "10.11.0.17" not in middleware.blocked_ips
@@ -77,10 +73,8 @@ class TestProxyAwareClientIP:
 class TestPublicWebhookBypass:
     def test_webhook_passes_even_when_proxy_ip_is_blocked(self):
         """RED 2: webhook endpoint must succeed even if `request.client.host` is in blocked_ips."""
-        app = _build_app()
-        client = TestClient(app)
+        client, middleware = _build_app()
 
-        middleware = _get_middleware(client)
         # Pretend the proxy IP got banned in a previous request.
         middleware.blocked_ips["testclient"] = datetime.now() + timedelta(minutes=30)
 
@@ -94,8 +88,7 @@ class TestPublicWebhookBypass:
 
     def test_webhook_with_suspicious_query_string_still_passes(self):
         """RED 3: query string noise must not turn a webhook into a 'suspicious path' match."""
-        app = _build_app()
-        client = TestClient(app)
+        client, _ = _build_app()
 
         # `?param=.env.bak` should be ignored — the request path is the webhook.
         resp = client.post(
@@ -108,8 +101,7 @@ class TestPublicWebhookBypass:
 class TestSuspiciousPathStillBlocksRealClient:
     def test_suspicious_path_blocks_real_client_not_proxy(self):
         """RED 4: a hit on a suspicious path must ban the upstream client (XFF[0]), not the proxy."""
-        app = _build_app()
-        client = TestClient(app)
+        client, middleware = _build_app()
 
         resp = client.get(
             "/.env.bak",
@@ -117,7 +109,6 @@ class TestSuspiciousPathStillBlocksRealClient:
         )
         assert resp.status_code == 403
 
-        middleware = _get_middleware(client)
         assert "8.8.8.8" in middleware.blocked_ips
         # The proxy must remain free so legitimate traffic from the same proxy still flows.
         assert "10.11.0.17" not in middleware.blocked_ips
@@ -127,21 +118,18 @@ class TestSuspiciousPathStillBlocksRealClient:
 class TestFallbackWhenNoForwardedHeader:
     def test_falls_back_to_request_client_host(self):
         """RED 5: without X-Forwarded-For, the middleware uses request.client.host."""
-        app = _build_app()
-        client = TestClient(app)
+        client, middleware = _build_app()
 
         # No XFF, no X-Real-IP. Suspicious path triggers a block on the direct client.
         resp = client.get("/.env.bak")
         assert resp.status_code == 403
 
-        middleware = _get_middleware(client)
         # TestClient's default host string is "testclient" — that's the only signal we have.
         assert "testclient" in middleware.blocked_ips
 
     def test_x_real_ip_used_when_x_forwarded_for_missing(self):
         """Bonus coverage: X-Real-IP is honored when X-Forwarded-For is absent."""
-        app = _build_app()
-        client = TestClient(app)
+        client, middleware = _build_app()
 
         resp = client.get(
             "/.env.bak",
@@ -149,5 +137,4 @@ class TestFallbackWhenNoForwardedHeader:
         )
         assert resp.status_code == 403
 
-        middleware = _get_middleware(client)
         assert "5.5.5.5" in middleware.blocked_ips
