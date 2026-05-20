@@ -36,9 +36,12 @@ from app.agents.human_escalation.agent import HumanEscalationAgent
 from app.agents.knowledge.agent import KnowledgeAgent
 from app.agents.router.agent import RouterAgent
 from app.agents.router.schedule_router import ScheduleRouter
+from app.agents.schedule_intake.agent import ScheduleIntakeAgent
 from app.agents.scheduler.agent import SchedulerAgent
 from app.core.config import get_settings
+from app.core.supabase_client import get_supabase
 from app.core.telemetry import build_agent_run, log
+from app.repositories.intake_questions import load_intake_questions
 from app.iris.evolution_client import (
     EvolutionAPIError,
     persist_outbound_message,
@@ -135,6 +138,7 @@ class IrisState(TypedDict, total=False):
 # Singletons — keep one instance per agent to avoid per-message client churn.
 _router_agent = RouterAgent()
 _schedule_router = ScheduleRouter()
+_schedule_intake_agent = ScheduleIntakeAgent()
 _greeting_agent = GreetingAgent()
 _knowledge_agent = KnowledgeAgent()
 _scheduler_agent = SchedulerAgent()
@@ -349,14 +353,193 @@ def _call_escalation(state: IrisState, scope_text: str) -> Dict[str, Any]:
     return result
 
 
+def _ensure_evaluation_entry(
+    session_data: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Guarantee an ``evaluation`` entry exists in ``session_data``.
+
+    Cold-start case: ScheduleRouter just decided SCHEDULE_INTAKE but the
+    upstream Manager (mocked) didn't seed an evaluation entry yet. We
+    synthesize one with ``service=None`` so the intake agent gets a
+    well-formed envelope — it short-circuits to completion when both
+    ``service`` and ``questions`` are absent, which is the correct cold-start
+    behaviour until Manager wires service detection.
+
+    Returns a NEW list; never mutates the input.
+    """
+    result = list(session_data or [])
+    if not any(e.get("name") == "evaluation" for e in result):
+        result.append(
+            {
+                "name": "evaluation",
+                "data": {"service": None, "intake_answers": []},
+            }
+        )
+    return result
+
+
+def _extract_evaluation_service(
+    session_data: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Pull the service-of-interest from the evaluation entry (may be None)."""
+    for entry in session_data or []:
+        if entry.get("name") == "evaluation":
+            return (entry.get("data") or {}).get("service")
+    return None
+
+
+def _resolve_service_metadata(
+    clinic_id: str,
+    service_name: Optional[str],
+    *,
+    trace_id: str = "",
+) -> tuple[Optional[str], List[str]]:
+    """Resolve ``(service_id, contraindications)`` for ``service_name``.
+
+    Strategy:
+      - If ``service_name`` is falsy, return ``(None, [])``.
+      - Query ``sf_clinic_services`` filtered by ``(clinic_id, name)``,
+        ordered by ``created_at ASC``, ``limit 1``. Pull ``id`` and
+        ``contraindications``.
+      - On any error (network, missing column, etc.) return ``(None, [])``
+        so the pipeline degrades gracefully — the agent receives an empty
+        questions list when service can't be resolved, which keeps the
+        conversation moving instead of crashing.
+
+    No mutation of state. Pure I/O wrapper.
+    """
+    if not service_name:
+        return None, []
+    try:
+        sb = get_supabase()
+        rows = (
+            sb.table("sf_clinic_services")
+            .select("id, contraindications")
+            .eq("clinic_id", clinic_id)
+            .eq("name", service_name)
+            .order("created_at")
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "iris.schedule_intake.service_lookup_failed",
+            trace_id=trace_id,
+            clinic_id=clinic_id,
+            service=service_name,
+            error=str(exc),
+        )
+        return None, []
+
+    if not rows:
+        log.info(
+            "iris.schedule_intake.service_not_found",
+            trace_id=trace_id,
+            clinic_id=clinic_id,
+            service=service_name,
+        )
+        return None, []
+
+    row = rows[0]
+    contraindications = list(row.get("contraindications") or [])
+    return row.get("id"), contraindications
+
+
+def _call_schedule_intake(
+    state: IrisState,
+    *,
+    scope_text: str,
+    session_data: List[Dict[str, Any]],
+    sub_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Dispatch SCHEDULE_INTAKE to ``ScheduleIntakeAgent``.
+
+    Pre-loads ``questions`` (clinic baseline + service override) and
+    ``contraindications`` per spec §11 / §15. Returns the standard envelope
+    augmented with ``schedule_sub_intent`` / ``schedule_is_deviation`` /
+    ``schedule_session_data`` so the dispatcher's state propagation keeps
+    working.
+    """
+    clinic_id = state.get("clinic_id", "") or ""
+    trace_id = state.get("trace_id", "") or ""
+
+    # Ensure evaluation entry exists; pull service.
+    session_data = _ensure_evaluation_entry(session_data)
+    service_name = _extract_evaluation_service(session_data)
+
+    # Resolve service metadata (id + contraindications). Either may be missing.
+    service_id, contraindications = _resolve_service_metadata(
+        clinic_id, service_name, trace_id=trace_id
+    )
+
+    # Load intake questions (baseline + optional service-specific union).
+    try:
+        questions = load_intake_questions(clinic_id, service_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "iris.schedule_intake.questions_load_failed",
+            trace_id=trace_id,
+            clinic_id=clinic_id,
+            service_id=service_id,
+            error=str(exc),
+        )
+        questions = []
+
+    log.info(
+        "iris.schedule_intake.invoke",
+        trace_id=trace_id,
+        clinic_id=clinic_id,
+        service=service_name,
+        service_id=service_id,
+        questions_count=len(questions),
+        contraindications_count=len(contraindications),
+    )
+
+    envelope = _schedule_intake_agent.forward(
+        latest_message=scope_text or state.get("message", ""),
+        history=state.get("history", []),
+        session_data=session_data,
+        clinic_id=clinic_id,
+        service=service_name or "",
+        questions=questions,
+        contraindications=contraindications,
+        clinic_name=state.get("clinic_name", "Clínica"),
+        assistant_name=state.get("assistant_name", "Iris"),
+    )
+
+    # Surface the agent's session_data update into schedule_session_data so
+    # the dispatcher can roll it back into state for the next turn.
+    updated_session_data = (envelope.get("data") or {}).get("session_data") or session_data
+
+    data = dict(envelope.get("data") or {})
+    data["schedule_sub_intent"] = "SCHEDULE_INTAKE"
+    data["schedule_is_deviation"] = bool(sub_result.get("is_deviation", False))
+    data["schedule_session_data"] = updated_session_data
+    data["schedule_confidence"] = sub_result.get("confidence", 0.0)
+    data["schedule_reasoning"] = sub_result.get("reasoning", "")
+
+    return {
+        "messages": envelope.get("messages", []),
+        "conversation_stage": envelope.get(
+            "conversation_stage", state.get("conversation_stage", "schedule_intake")
+        ),
+        "reasoning": envelope.get("reasoning", ""),
+        "data": data,
+    }
+
+
 def _call_scheduler(state: IrisState, scope_text: str) -> Dict[str, Any]:
     """Run the schedule sub-router, then dispatch to the sub-agent it picks.
 
-    For MVP, sub-agents (intake/cashier/evaluation/service/etc.) are not
-    implemented yet, so we always fall back to the deterministic UNKNOWN
-    response after sub-routing. The sub-router run still produces a real
-    agent_run for telemetry — that's what lets us validate the sub-routing
-    decisions in prod before building the sub-agents.
+    Wiring status:
+      - ``SCHEDULE_INTAKE`` → :class:`ScheduleIntakeAgent` (wired here).
+      - Other sub-intents (CASHIER, EVALUATION, SERVICE, COMPLETION,
+        CONFIRMATION, REMINDER, CHANGE, CANCEL, FALLBACK) → deterministic
+        UNKNOWN fallback. Sub-router run still produces a real agent_run for
+        telemetry so we can audit sub-routing decisions in prod before each
+        sub-agent ships.
     """
     sequence = resolve_schedule_sequence(state)
     current_stage = state.get("conversation_stage", "new") or "new"
@@ -382,8 +565,26 @@ def _call_scheduler(state: IrisState, scope_text: str) -> Dict[str, Any]:
         current_stage=current_stage,
     )
 
-    # No sub-agents wired yet → deterministic placeholder so the patient
-    # still sees a reply. When sub-agents ship, dispatch here.
+    if next_intent == "SCHEDULE_INTAKE":
+        try:
+            return _call_schedule_intake(
+                state,
+                scope_text=scope_text,
+                session_data=sub_result.get("session_data") or session_data,
+                sub_result=sub_result,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "iris.schedule_intake.dispatch_failed",
+                trace_id=state.get("trace_id"),
+                error=str(exc),
+            )
+            # Fall through to UNKNOWN fallback below so the patient still
+            # gets a reply rather than a 500.
+
+    # No sub-agents wired yet for the remaining sub-intents → deterministic
+    # placeholder so the patient still sees a reply. When each sub-agent
+    # ships, add a branch above this point.
     return {
         "messages": [{"type": "text", "content": UNKNOWN_FALLBACK_TEXT}],
         "conversation_stage": state.get("conversation_stage", "new"),
