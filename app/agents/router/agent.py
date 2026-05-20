@@ -39,8 +39,8 @@ ROUTER_MODEL = "deepseek/deepseek-v4-flash"
 ROUTER_TEMPERATURE = 0.0
 ROUTER_MAX_TOKENS = 384
 
-# DeepSeek thinking-mode disabled for low-latency single-turn classification.
-ROUTER_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
+# DeepSeek standard inference — no provider-specific extras.
+ROUTER_EXTRA_BODY: Dict[str, Any] = {}
 
 DEFAULT_CONFIDENCE_THRESHOLD = 0.70
 MIN_CONFIDENCE_THRESHOLD = 0.50

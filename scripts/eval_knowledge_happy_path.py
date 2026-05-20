@@ -164,7 +164,6 @@ def judge(question: str, context: str, answer: str) -> Dict[str, str]:
             max_tokens=JUDGE_MAX_TOKENS,
             temperature=JUDGE_TEMPERATURE,
             response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "disabled"}},
         )
         if not outputs:
             return {"verdict": "NO", "reasoning": "judge returned empty"}

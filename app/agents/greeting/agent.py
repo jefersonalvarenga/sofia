@@ -43,8 +43,8 @@ GREETING_MODEL = "deepseek/deepseek-v4-flash"
 GREETING_TEMPERATURE = 0.0
 GREETING_MAX_TOKENS = 192
 
-# DeepSeek thinking-mode disabled for low-latency single-turn greeting.
-GREETING_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
+# DeepSeek standard inference — no provider-specific extras.
+GREETING_EXTRA_BODY: Dict[str, Any] = {}
 
 TECHNICAL_FALLBACK = "Olá! Tudo bem?"
 

@@ -43,7 +43,8 @@ from .schemas import IntakeAnswer, IntakeData, IntakeOutput
 INTAKE_MODEL = "deepseek/deepseek-v4-flash"
 INTAKE_TEMPERATURE = 0.0
 INTAKE_MAX_TOKENS = 384
-INTAKE_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
+# DeepSeek standard inference — no provider-specific extras.
+INTAKE_EXTRA_BODY: Dict[str, Any] = {}
 
 DEFAULT_PARSE_CONFIDENCE_THRESHOLD = 0.70
 

@@ -47,8 +47,8 @@ KNOWLEDGE_MODEL = "deepseek/deepseek-v4-pro"
 KNOWLEDGE_TEMPERATURE = 0.2  # baixa mas não-zero — respostas técnicas com leveza
 KNOWLEDGE_MAX_TOKENS = 512  # margem confortável para resposta + sources + flags
 
-# DeepSeek thinking-mode disabled for low-latency single-turn answer.
-KNOWLEDGE_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
+# DeepSeek standard inference — no provider-specific extras.
+KNOWLEDGE_EXTRA_BODY: Dict[str, Any] = {}
 
 EMBED_MODEL = "text-embedding-3-small"
 TOP_K_DEFAULT = 4
