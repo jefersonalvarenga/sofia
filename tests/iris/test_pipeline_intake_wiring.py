@@ -112,7 +112,7 @@ def _mk_supabase_mock(
 ):
     """Return a MagicMock that emulates the supabase-py builder chain.
 
-    ``sb.table("sf_clinic_services").select(...).eq(...).eq(...).order(...).limit(1).execute().data``
+    ``sb.table("sf_clinic_services").select(...).eq(...).ilike(...).order(...).limit(1).execute().data``
     returns ``[service_row]`` (or ``[]`` when ``service_row is None``).
     """
     rows = [service_row] if service_row is not None else []
@@ -120,6 +120,7 @@ def _mk_supabase_mock(
     builder = MagicMock()
     builder.select.return_value = builder
     builder.eq.return_value = builder
+    builder.ilike.return_value = builder
     builder.order.return_value = builder
     builder.limit.return_value = builder
     builder.execute.return_value = MagicMock(data=rows)

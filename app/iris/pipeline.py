@@ -416,7 +416,7 @@ def _resolve_service_metadata(
             sb.table("sf_clinic_services")
             .select("id, contraindications")
             .eq("clinic_id", clinic_id)
-            .eq("name", service_name)
+            .ilike("name", service_name)
             .order("created_at")
             .limit(1)
             .execute()
