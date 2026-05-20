@@ -54,6 +54,36 @@ class RateLimiter:
         return max(0, self.requests_per_minute - len(self.requests[client_ip]))
 
 
+def _get_client_ip(request: Request) -> str:
+    """Resolve the real client IP, accounting for a trusted reverse proxy.
+
+    Order of precedence:
+        1. First IP in the ``X-Forwarded-For`` chain (the originating client).
+        2. ``X-Real-IP`` header.
+        3. ``request.client.host`` (direct socket peer).
+
+    Trust assumption: this app is deployed behind a trusted reverse proxy
+    (Easypanel / Railway / similar) that sets X-Forwarded-For. We do NOT
+    maintain a trusted-proxy allowlist here — if the deployment topology
+    ever changes (e.g. direct internet exposure), the XFF header would
+    become spoofable and this helper must be revisited.
+    """
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+
+    real_ip = request.headers.get("X-Real-IP", "").strip()
+    if real_ip:
+        return real_ip
+
+    if request.client and request.client.host:
+        return request.client.host
+
+    return "unknown"
+
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, rate_limit: int = 60):
         super().__init__(app)
@@ -61,37 +91,41 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         self.blocked_ips: Dict[str, datetime] = {}
 
     async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host
+        client_ip = _get_client_ip(request)
         path = request.url.path.lower()
         user_agent = request.headers.get("user-agent", "").lower()
-
-        if client_ip in self.blocked_ips:
-            if datetime.now() < self.blocked_ips[client_ip]:
-                return JSONResponse(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    content={"detail": "IP temporarily blocked due to suspicious activity"}
-                )
-            else:
-                del self.blocked_ips[client_ip]
-
-        if any(suspicious in path for suspicious in SUSPICIOUS_PATHS):
-            self._block_ip(client_ip, minutes=30)
-            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
-
-        if any(path.endswith(ext) for ext in SUSPICIOUS_EXTENSIONS):
-            self._block_ip(client_ip, minutes=30)
-            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
-
-        if any(blocked in user_agent for blocked in BLOCKED_USER_AGENTS):
-            self._block_ip(client_ip, minutes=60)
-            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
 
         # Public routes that authenticate by other means (or are open by design):
         #   - /v1/health: liveness probe.
         #   - /v1/iris/webhook/*: Evolution API does not send custom headers; the
         #     handler authenticates by resolving instance_name -> clinic_id and
         #     responds 200 on unknown instances to avoid retry storms.
+        # These paths MUST bypass the suspicious-path / extension / user-agent /
+        # blocked-IP checks. Otherwise an unrelated scan from any source that
+        # shares the upstream proxy IP can ban the proxy and starve the webhook.
         public_paths = (path == "/v1/health") or path.startswith("/v1/iris/webhook/")
+
+        if not public_paths:
+            if client_ip in self.blocked_ips:
+                if datetime.now() < self.blocked_ips[client_ip]:
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "IP temporarily blocked due to suspicious activity"}
+                    )
+                else:
+                    del self.blocked_ips[client_ip]
+
+            if any(suspicious in path for suspicious in SUSPICIOUS_PATHS):
+                self._block_ip(client_ip, minutes=30)
+                return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
+
+            if any(path.endswith(ext) for ext in SUSPICIOUS_EXTENSIONS):
+                self._block_ip(client_ip, minutes=30)
+                return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
+
+            if any(blocked in user_agent for blocked in BLOCKED_USER_AGENTS):
+                self._block_ip(client_ip, minutes=60)
+                return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Access denied"})
 
         if path.startswith("/v1/") and not public_paths:
             required_key = _get_api_key()
