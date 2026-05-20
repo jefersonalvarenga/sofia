@@ -112,30 +112,42 @@ def _mk_load_supabase_mock(
 def _mk_save_supabase_mock() -> tuple[MagicMock, MagicMock]:
     """Mock ``get_supabase()`` for ``save_session``.
 
-    Returns ``(supabase_mock, update_builder)`` so the test can inspect what
-    payload was passed to ``sf_sessions.update(...)``.
+    Returns ``(supabase_mock, sessions_builder)`` — ``sessions_builder`` is the
+    stable mock returned every time ``sb.table("sf_sessions")`` is called, so
+    tests can introspect ``sessions_builder.update.call_args``.
     """
     sb = MagicMock()
-    update_builder = MagicMock()
-    update_builder.eq.return_value = update_builder
-    update_builder.execute.return_value = MagicMock(data=[{"session_id": SESSION_ID}])
+    update_chain = MagicMock()
+    update_chain.eq.return_value = update_chain
+    update_chain.execute.return_value = MagicMock(data=[{"session_id": SESSION_ID}])
 
-    insert_builder = MagicMock()
-    insert_builder.execute.return_value = MagicMock(data=[])
+    insert_chain = MagicMock()
+    insert_chain.execute.return_value = MagicMock(data=[])
+
+    # Memoize per-table builders so multiple sb.table("name") calls return
+    # the *same* builder. supabase-py builders are method-chained and the
+    # production code calls sb.table("sf_sessions") once per save; the test
+    # then re-calls it to inspect — both must hit the same mock.
+    builders: Dict[str, MagicMock] = {}
 
     def _table(name: str) -> MagicMock:
+        if name in builders:
+            return builders[name]
         builder = MagicMock()
         if name == "sf_sessions":
-            builder.update.return_value = update_builder
+            builder.update.return_value = update_chain
+            builder.insert.return_value = insert_chain
         elif name == "sf_agent_activations":
-            builder.insert.return_value = insert_builder
+            builder.insert.return_value = insert_chain
         else:
-            builder.update.return_value = update_builder
-            builder.insert.return_value = insert_builder
+            builder.update.return_value = update_chain
+            builder.insert.return_value = insert_chain
+        builders[name] = builder
         return builder
 
     sb.table.side_effect = _table
-    return sb, update_builder
+    sessions_builder = _table("sf_sessions")  # pre-register for test introspection
+    return sb, sessions_builder
 
 
 def _base_state_for_save(
@@ -194,25 +206,17 @@ class TestSaveSessionPersistsScheduleSessionData:
             }
         ]
         state = _base_state_for_save(schedule_session_data=schedule_data)
-        sb, update_builder = _mk_save_supabase_mock()
+        sb, sessions_builder = _mk_save_supabase_mock()
 
         with patch.object(manager, "get_supabase", return_value=sb):
             manager.save_session(state)  # type: ignore[arg-type]
 
-        # The first positional argument to .update(...) is the payload dict.
-        assert update_builder.eq.called, "expected sf_sessions.update(...).eq(...)"
-        # Find the call to sb.table("sf_sessions").update(payload)
+        # save_session must hit sf_sessions table and call .update(payload).
         table_calls = [c for c in sb.table.call_args_list if c.args and c.args[0] == "sf_sessions"]
         assert table_calls, "expected at least one sf_sessions table call"
+        assert sessions_builder.update.called, "save_session must call sf_sessions.update(...)"
 
-        # Inspect the update payload via the mock builder used.
-        # sb.table("sf_sessions").update is a MagicMock; introspect its call args.
-        sessions_builder = sb.table.return_value  # last builder; sufficient for our chain.
-        # The MagicMock created in _mk_save_supabase_mock for sf_sessions has .update mock.
-        # Re-create access via the side_effect: sb.table("sf_sessions") returns a builder.
-        sf_builder = sb.table("sf_sessions")
-        assert sf_builder.update.called, "save_session must call sf_sessions.update(...)"
-        payload = sf_builder.update.call_args.args[0]
+        payload = sessions_builder.update.call_args.args[0]
         assert "schedule_session_data" in payload, (
             "save_session must include schedule_session_data in the UPDATE payload "
             f"(payload keys: {list(payload.keys())})"

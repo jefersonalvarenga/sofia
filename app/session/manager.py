@@ -78,7 +78,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # Use .limit(1).execute() instead — returns an empty list safely.
     session_result = (
         supabase.table("sf_sessions")  # tenant-lint: exempt — session_id is composite ({remote_jid}:{clinic_id})
-        .select("session_id, history, conversation_stage, paused, updated_at")
+        .select("session_id, history, conversation_stage, paused, updated_at, schedule_session_data")
         .eq("session_id", session_id)
         .limit(1)
         .execute()
@@ -89,6 +89,7 @@ def load_session(remote_jid: str, clinic_id: str,
     paused: bool = False
     patient_name: Optional[str] = push_name
     last_interaction_at: Optional[datetime] = None
+    schedule_session_data: List[Dict[str, Any]] = []
 
     if session_result.data and len(session_result.data) > 0:
         row = session_result.data[0]
@@ -96,6 +97,21 @@ def load_session(remote_jid: str, clinic_id: str,
         history = raw_history if isinstance(raw_history, list) else []
         conversation_stage = row.get("conversation_stage") or "new"
         paused = bool(row.get("paused", False))
+        # schedule_session_data: cross-turn state for SCHEDULE_* sub-agents.
+        # Migration 029 adds this jsonb column with default '[]'. Pre-migration
+        # deploys may not return the key — degrade silently to [].
+        raw_schedule = row.get("schedule_session_data")
+        if isinstance(raw_schedule, list):
+            schedule_session_data = raw_schedule
+        elif raw_schedule is None:
+            schedule_session_data = []
+        else:
+            log.warn(
+                "session.load.bad_schedule_session_data",
+                session_id=session_id,
+                raw_type=type(raw_schedule).__name__,
+            )
+            schedule_session_data = []
         # Parse updated_at if present. Best-effort: if the value is malformed
         # or missing we leave last_interaction_at=None — RouterAgent treats
         # that as stale=false (safe default).
@@ -165,6 +181,10 @@ def load_session(remote_jid: str, clinic_id: str,
         # session. None on first-ever contact; consumed by RouterAgent to
         # decide the GREETING-composition ``stale`` flag (>24h gap).
         "last_interaction_at": last_interaction_at,
+        # Cross-agent state for SCHEDULE_* sub-agents. Hydrated from the
+        # schedule_session_data jsonb column (migration 029). Pre-migration
+        # deploys degrade to [] (see read above).
+        "schedule_session_data": schedule_session_data,
     }
 
 
@@ -418,9 +438,17 @@ def save_session(state: SofiaState) -> None:
             conversation_stage = last_stage
 
     # 1. Update sf_sessions
+    # ``schedule_session_data`` is cross-turn state for SCHEDULE_* sub-agents
+    # (populated by ScheduleIntakeAgent and successors). It must survive
+    # between messages — without this persistence, INTAKE re-asks the same
+    # question every turn. Default ``[]`` matches migration 029's column
+    # default and degrades gracefully if the state never set it.
+    schedule_session_data = state.get("schedule_session_data") or []
+
     update_payload: Dict[str, Any] = {
         "history": new_history,
         "conversation_stage": conversation_stage,
+        "schedule_session_data": schedule_session_data,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
