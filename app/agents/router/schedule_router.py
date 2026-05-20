@@ -40,7 +40,8 @@ from .schedule_schemas import ScheduleRouterOutput, SessionDataEntry
 SCHEDULE_ROUTER_MODEL = "deepseek/deepseek-v4-flash"
 SCHEDULE_ROUTER_TEMPERATURE = 0.0
 SCHEDULE_ROUTER_MAX_TOKENS = 384
-SCHEDULE_ROUTER_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "disabled"}}
+# DeepSeek standard inference — no provider-specific extras.
+SCHEDULE_ROUTER_EXTRA_BODY: Dict[str, Any] = {}
 
 DEFAULT_SCHEDULE_CONFIDENCE_THRESHOLD = 0.70
 
