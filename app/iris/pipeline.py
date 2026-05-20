@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -107,6 +108,10 @@ class IrisState(TypedDict, total=False):
     clinic_style: Optional[Dict[str, Any]]
     attribution_id: Optional[str]
     paused: bool
+    # Timestamp of the last sf_sessions row update (UTC). Drives the
+    # RouterAgent ``stale`` flag for >24h re-engagement composition.
+    # Populated by ``node_load_context``; None on first-ever contact.
+    last_interaction_at: Optional[datetime]
 
     # ---- Scheduling ----
     available_slots: List[str]
@@ -244,6 +249,8 @@ def node_detect_intents(state: IrisState) -> Dict[str, Any]:
             latest_message=state["message"],
             history=state.get("history", []),
             conversation_stage=state.get("conversation_stage", "new"),
+            last_interaction_at=state.get("last_interaction_at"),
+            patient_name=state.get("patient_name") or state.get("push_name"),
         )
         return {
             "messages": [],

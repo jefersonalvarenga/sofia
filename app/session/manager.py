@@ -78,7 +78,7 @@ def load_session(remote_jid: str, clinic_id: str,
     # Use .limit(1).execute() instead — returns an empty list safely.
     session_result = (
         supabase.table("sf_sessions")  # tenant-lint: exempt — session_id is composite ({remote_jid}:{clinic_id})
-        .select("session_id, history, conversation_stage, paused")
+        .select("session_id, history, conversation_stage, paused, updated_at")
         .eq("session_id", session_id)
         .limit(1)
         .execute()
@@ -88,6 +88,7 @@ def load_session(remote_jid: str, clinic_id: str,
     conversation_stage: str = "new"
     paused: bool = False
     patient_name: Optional[str] = push_name
+    last_interaction_at: Optional[datetime] = None
 
     if session_result.data and len(session_result.data) > 0:
         row = session_result.data[0]
@@ -95,6 +96,27 @@ def load_session(remote_jid: str, clinic_id: str,
         history = raw_history if isinstance(raw_history, list) else []
         conversation_stage = row.get("conversation_stage") or "new"
         paused = bool(row.get("paused", False))
+        # Parse updated_at if present. Best-effort: if the value is malformed
+        # or missing we leave last_interaction_at=None — RouterAgent treats
+        # that as stale=false (safe default).
+        raw_updated_at = row.get("updated_at")
+        if isinstance(raw_updated_at, str) and raw_updated_at:
+            try:
+                # Postgres returns "...+00:00" or "...Z" — fromisoformat handles
+                # the offset form natively; normalize trailing Z to +00:00.
+                iso = raw_updated_at.replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(iso)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                last_interaction_at = parsed
+            except (TypeError, ValueError):
+                log.warn(
+                    "session.load.bad_updated_at",
+                    session_id=session_id,
+                    raw_updated_at=raw_updated_at,
+                )
+        elif isinstance(raw_updated_at, datetime):
+            last_interaction_at = raw_updated_at
     else:
         supabase.table("sf_sessions").insert(
             {
@@ -139,6 +161,10 @@ def load_session(remote_jid: str, clinic_id: str,
         "attribution_id": attribution_id,  # passed through state to _persist_appointment
         "clinic_style": clinic_style,
         "paused": paused,
+        # UTC timestamp of the most recent sf_sessions update for this
+        # session. None on first-ever contact; consumed by RouterAgent to
+        # decide the GREETING-composition ``stale`` flag (>24h gap).
+        "last_interaction_at": last_interaction_at,
     }
 
 
