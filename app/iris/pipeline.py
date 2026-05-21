@@ -58,14 +58,15 @@ UNKNOWN_FALLBACK_TEXT = "Ainda estou aprendendo. Em breve te ajudo melhor 😊"
 # Mocked schedule sequences. Pulled from the schedule-router spec — the upstream
 # Manager agent decides which sequence to activate per session in production.
 # For now we hardcode the evaluation flow as the default.
+#
+# SCHEDULE_CASHIER removed from MVP scope (2026-05-21). Payment intake is post-MVP
+# — see kb/07-MVP/Tech/03-Discussoes/Cashier/ for the parked design (Asaas BaaS).
 SCHEDULE_SEQUENCE_EVALUATION = [
     "SCHEDULE_INTAKE",
-    "SCHEDULE_CASHIER",
     "SCHEDULE_EVALUATION",
     "SCHEDULE_COMPLETION",
 ]
 SCHEDULE_SEQUENCE_SERVICE = [
-    "SCHEDULE_CASHIER",
     "SCHEDULE_SERVICE",
     "SCHEDULE_SERVICE_PROTOCOL",
     "SCHEDULE_COMPLETION",
@@ -542,7 +543,9 @@ def _call_scheduler(state: IrisState, scope_text: str) -> Dict[str, Any]:
 
     Wiring status:
       - ``SCHEDULE_INTAKE`` → :class:`ScheduleIntakeAgent` (wired here).
-      - Other sub-intents (CASHIER, EVALUATION, SERVICE, COMPLETION,
+      - ``SCHEDULE_CASHIER`` → **out of MVP scope** (parked spec in
+        kb/07-MVP/Tech/03-Discussoes/Cashier/).
+      - Other sub-intents (EVALUATION, SERVICE, SERVICE_PROTOCOL, COMPLETION,
         CONFIRMATION, REMINDER, CHANGE, CANCEL, FALLBACK) → deterministic
         UNKNOWN fallback. Sub-router run still produces a real agent_run for
         telemetry so we can audit sub-routing decisions in prod before each
